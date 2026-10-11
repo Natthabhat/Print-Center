@@ -47,6 +47,8 @@ For startup without a GUI login, configure systemd user lingering for your accou
 
 ## Docker on Ubuntu
 
+For an HTTPS reverse proxy, configure `DASHBOARD_PUBLIC_HOST` with the exact hostname, `DASHBOARD_AUTH_USER`, and `DASHBOARD_AUTH_HASH`. The hash format is `hex_salt:hex_digest`, using PBKDF2-HMAC-SHA256 with 200,000 iterations. Public-host requests require HTTP Basic login over HTTPS; missing credentials disable public access. The proxy must preserve the public Host header. Explicit LAN and Tailscale addresses retain private-network access without this login. Settings and hashes belong in the excluded `.env` file.
+
 To serve both Tailscale and LAN, set `DASHBOARD_BIND` to the server's Tailscale IP and `DASHBOARD_EXTRA_BIND` to its LAN IP in `.env`. Both use `DASHBOARD_PORT`; other interfaces are not bound. Recreate the container after changing these values.
 
 Docker Compose builds the image from this repository. It uses host networking for LAN printers and binds the web service only to `DASHBOARD_BIND`.

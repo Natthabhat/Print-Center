@@ -1,6 +1,7 @@
 """Private Klipper dashboard on explicitly configured server addresses."""
 import http.client, tempfile
 import copy
+import base64, hashlib, hmac
 from live_status import PrinterFeed
 from camera_monitor import SnapmakerCamera
 from box_control import parse_catalog, box_script, plate_filaments, mapping_script
@@ -12,6 +13,9 @@ PRINTER = os.environ.get('PRINTER_HOST', '192.168.1.100')
 BASE = 'http://' + PRINTER + ':7125'
 BIND = os.environ.get('DASHBOARD_BIND', '127.0.0.1')
 EXTRA_BIND = os.environ.get('DASHBOARD_EXTRA_BIND', '').strip()
+PUBLIC_HOST = os.environ.get('DASHBOARD_PUBLIC_HOST', '').strip().lower()
+AUTH_USER = os.environ.get('DASHBOARD_AUTH_USER', '')
+AUTH_HASH = os.environ.get('DASHBOARD_AUTH_HASH', '')
 PORT = int(os.environ.get('DASHBOARD_PORT', '8787'))
 TOKEN = secrets.token_urlsafe(32)
 CONFIG = pathlib.Path(os.environ.get('DASHBOARD_DATA_DIR', str(ROOT))) / 'printers.json'
@@ -516,10 +520,43 @@ class Handler(BaseHTTPRequestHandler):
         allowed = {f'{BIND}:{PORT}', f'127.0.0.1:{PORT}', f'localhost:{PORT}'}
         if EXTRA_BIND:
             allowed.add(f'{EXTRA_BIND}:{PORT}')
+        if PUBLIC_HOST:
+            allowed.add(PUBLIC_HOST)
         return self.headers.get('Host') in allowed
+
+    def origin_ok(self):
+        origin = self.headers.get('Origin')
+        host = self.headers.get('Host', '')
+        expected = ('https://' if PUBLIC_HOST and host == PUBLIC_HOST else 'http://') + host
+        return not origin or origin == expected
+
+    def authenticated(self):
+        if not PUBLIC_HOST or self.headers.get('Host') != PUBLIC_HOST:
+            return True
+        if not AUTH_USER or not AUTH_HASH:
+            self.reply({'error': 'Public access requires configured login credentials'}, 503)
+            return False
+        try:
+            scheme, encoded = self.headers.get('Authorization', '').split(' ', 1)
+            if scheme.lower() != 'basic': raise ValueError('Authentication required')
+            username, password = base64.b64decode(encoded, validate=True).decode('utf-8').split(':', 1)
+            salt, expected = AUTH_HASH.split(':', 1)
+            actual = hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), 200000).hex()
+            if hmac.compare_digest(username, AUTH_USER) and hmac.compare_digest(actual, expected):
+                return True
+        except (ValueError, UnicodeError):
+            pass
+        self.send_response(401)
+        self.send_header('WWW-Authenticate', 'Basic realm="Print Center", charset="UTF-8"')
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+        return False
     def do_GET(self):
         if not self.host_ok():
             return self.reply({'error': 'Invalid host'}, 403)
+        if not self.authenticated():
+            return
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
@@ -608,13 +645,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             self.reply({'error': str(error), 'offline': True}, 502)
     def do_POST(self):
+        if not self.host_ok():
+            return self.reply({'error': 'Invalid host'}, 403)
+        if not self.authenticated():
+            return
         path = urllib.parse.urlsplit(self.path).path
         if path not in ('/api/control', '/api/printers', '/api/upload'):
             return self.reply({'error': 'Not found'}, 404)
         if not self.host_ok() or self.headers.get('X-Control-Token') != TOKEN:
             return self.reply({'error': 'Refresh this dashboard before using controls'}, 403)
-        origin = self.headers.get('Origin')
-        if origin and origin != 'http://' + self.headers.get('Host',''):
+        if not self.origin_ok():
             return self.reply({'error': 'Invalid origin'}, 403)
         try:
             length = int(self.headers.get('Content-Length', '0'))

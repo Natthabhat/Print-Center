@@ -3,6 +3,45 @@ from unittest.mock import patch
 import app
 
 class DashboardTests(unittest.TestCase):
+    def test_public_login_protects_status_and_controls(self):
+        import hashlib, base64
+        salt = bytes.fromhex('12' * 16)
+        encoded_hash = salt.hex() + ':' + hashlib.pbkdf2_hmac('sha256', b'test-password', salt, 200000).hex()
+        handler = object.__new__(app.Handler)
+        handler.send_response = lambda code: setattr(handler, 'code', code)
+        handler.send_header = lambda *args: None
+        handler.end_headers = lambda: None
+        handler.reply = lambda value, code: setattr(handler, 'code', code)
+        with patch.object(app, 'PUBLIC_HOST', 'printer.example.com'), patch.object(app, 'AUTH_USER', 'owner'), patch.object(app, 'AUTH_HASH', encoded_hash):
+            handler.headers = {'Host': 'printer.example.com'}
+            self.assertFalse(handler.authenticated())
+            self.assertEqual(handler.code, 401)
+            for password, valid in [('wrong', False), ('test-password', True)]:
+                handler.headers['Authorization'] = 'Basic ' + base64.b64encode(('owner:' + password).encode()).decode()
+                self.assertEqual(handler.authenticated(), valid)
+            handler.headers = {'Host': '127.0.0.1:8787'}
+            self.assertTrue(handler.authenticated())
+            handler.headers = {'Host': 'printer.example.com'}
+            with patch.object(app, 'AUTH_HASH', ''):
+                self.assertFalse(handler.authenticated())
+                self.assertEqual(handler.code, 503)
+
+    def test_public_host_and_https_origin_are_explicit(self):
+        handler = object.__new__(app.Handler)
+        with patch.object(app, 'PUBLIC_HOST', 'printer.example.com'):
+            handler.headers = {'Host': 'printer.example.com', 'Origin': 'https://printer.example.com'}
+            self.assertTrue(handler.host_ok())
+            self.assertTrue(handler.origin_ok())
+            handler.headers['Origin'] = 'https://other.example.com'
+            self.assertFalse(handler.origin_ok())
+            handler.headers['Origin'] = 'http://printer.example.com'
+            self.assertFalse(handler.origin_ok())
+            handler.headers = {'Host': 'other.example.com'}
+            self.assertFalse(handler.host_ok())
+        with patch.object(app, 'PUBLIC_HOST', ''):
+            handler.headers = {'Host': 'printer.example.com'}
+            self.assertFalse(handler.host_ok())
+
     def test_extra_interface_host_validation(self):
         handler = object.__new__(app.Handler)
         with patch.object(app, 'BIND', '100.100.100.100'), patch.object(app, 'EXTRA_BIND', '192.168.1.36'):
