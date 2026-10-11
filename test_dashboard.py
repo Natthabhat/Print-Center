@@ -11,14 +11,19 @@ class DashboardTests(unittest.TestCase):
         handler.send_response = lambda code: setattr(handler, 'code', code)
         handler.send_header = lambda *args: None
         handler.end_headers = lambda: None
-        handler.reply = lambda value, code: setattr(handler, 'code', code)
+        handler.reply = lambda value, code=200, **kwargs: setattr(handler, 'code', code)
+        handler.command, handler.path = 'GET', '/api/printers'
         with patch.object(app, 'PUBLIC_HOST', 'printer.example.com'), patch.object(app, 'AUTH_USER', 'owner'), patch.object(app, 'AUTH_HASH', encoded_hash):
             handler.headers = {'Host': 'printer.example.com'}
             self.assertFalse(handler.authenticated())
             self.assertEqual(handler.code, 401)
-            for password, valid in [('wrong', False), ('test-password', True)]:
-                handler.headers['Authorization'] = 'Basic ' + base64.b64encode(('owner:' + password).encode()).decode()
-                self.assertEqual(handler.authenticated(), valid)
+            self.assertTrue(app.LOGIN.verify('owner', 'test-password', 'owner', encoded_hash))
+            self.assertFalse(app.LOGIN.verify('owner', 'wrong', 'owner', encoded_hash))
+            token = app.LOGIN.issue()
+            handler.headers['Cookie'] = 'print_center_session=' + token
+            self.assertTrue(handler.authenticated())
+            app.LOGIN.revoke(handler.headers['Cookie'])
+            self.assertFalse(handler.authenticated())
             handler.headers = {'Host': '127.0.0.1:8787'}
             self.assertTrue(handler.authenticated())
             handler.headers = {'Host': 'printer.example.com'}
