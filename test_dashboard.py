@@ -3,6 +3,15 @@ from unittest.mock import patch
 import app
 
 class DashboardTests(unittest.TestCase):
+    def test_extra_interface_host_validation(self):
+        handler = object.__new__(app.Handler)
+        with patch.object(app, 'BIND', '100.100.100.100'), patch.object(app, 'EXTRA_BIND', '192.168.1.36'):
+            for host in ['100.100.100.100:8787', '192.168.1.36:8787']:
+                handler.headers = {'Host': host}
+                self.assertTrue(handler.host_ok())
+            handler.headers = {'Host': '192.168.1.37:8787'}
+            self.assertFalse(handler.host_ok())
+
     def test_private_addresses_and_ports(self):
         self.assertEqual(app.valid_url('192.168.31.129', 7125), 'http://192.168.31.129:7125')
         self.assertEqual(app.valid_url('100.100.100.100:7126', 7125), 'http://100.100.100.100:7126')

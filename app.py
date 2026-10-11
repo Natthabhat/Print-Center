@@ -1,4 +1,4 @@
-"""Private Klipper dashboard. Bind only to the Ubuntu server's Tailscale IP."""
+"""Private Klipper dashboard on explicitly configured server addresses."""
 import http.client, tempfile
 import copy
 from live_status import PrinterFeed
@@ -11,6 +11,7 @@ ROOT = pathlib.Path(__file__).parent
 PRINTER = os.environ.get('PRINTER_HOST', '192.168.1.100')
 BASE = 'http://' + PRINTER + ':7125'
 BIND = os.environ.get('DASHBOARD_BIND', '127.0.0.1')
+EXTRA_BIND = os.environ.get('DASHBOARD_EXTRA_BIND', '').strip()
 PORT = int(os.environ.get('DASHBOARD_PORT', '8787'))
 TOKEN = secrets.token_urlsafe(32)
 CONFIG = pathlib.Path(os.environ.get('DASHBOARD_DATA_DIR', str(ROOT))) / 'printers.json'
@@ -512,7 +513,10 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def host_ok(self):
-        return self.headers.get('Host') in {f'{BIND}:{PORT}', f'127.0.0.1:{PORT}', f'localhost:{PORT}'}
+        allowed = {f'{BIND}:{PORT}', f'127.0.0.1:{PORT}', f'localhost:{PORT}'}
+        if EXTRA_BIND:
+            allowed.add(f'{EXTRA_BIND}:{PORT}')
+        return self.headers.get('Host') in allowed
     def do_GET(self):
         if not self.host_ok():
             return self.reply({'error': 'Invalid host'}, 403)
@@ -716,5 +720,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({'error': str(error)}, 502)
 
 if __name__ == '__main__':
-    print(f'Print Center: http://{BIND}:{PORT}', flush=True)
-    ThreadingHTTPServer((BIND, PORT), Handler).serve_forever()
+    addresses = list(dict.fromkeys([BIND] + ([EXTRA_BIND] if EXTRA_BIND else [])))
+    servers = [ThreadingHTTPServer((address, PORT), Handler) for address in addresses]
+    for server in servers[1:]:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    for address in addresses:
+        print(f'Print Center: http://{address}:{PORT}', flush=True)
+    servers[0].serve_forever()

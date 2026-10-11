@@ -7,6 +7,7 @@ services:
     network_mode: host
     environment:
       DASHBOARD_BIND: ${DASHBOARD_BIND:-127.0.0.1}
+      DASHBOARD_EXTRA_BIND: ${DASHBOARD_EXTRA_BIND:-}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8787}
       DASHBOARD_DATA_DIR: /data
     volumes:

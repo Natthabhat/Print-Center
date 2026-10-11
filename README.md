@@ -47,6 +47,8 @@ For startup without a GUI login, configure systemd user lingering for your accou
 
 ## Docker on Ubuntu
 
+To serve both Tailscale and LAN, set `DASHBOARD_BIND` to the server's Tailscale IP and `DASHBOARD_EXTRA_BIND` to its LAN IP in `.env`. Both use `DASHBOARD_PORT`; other interfaces are not bound. Recreate the container after changing these values.
+
 Docker Compose builds the image from this repository. It uses host networking for LAN printers and binds the web service only to `DASHBOARD_BIND`.
 
 ```sh
