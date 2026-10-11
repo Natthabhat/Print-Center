@@ -1,0 +1,21 @@
+[Unit]
+Description=Print Center Klipper dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Print-Center
+ExecStart=%h/Print-Center/.venv/bin/python %h/Print-Center/app.py
+Environment=DASHBOARD_BIND=127.0.0.1
+Environment=DASHBOARD_PORT=8787
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Print-Center
+
+[Install]
+WantedBy=default.target
