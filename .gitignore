@@ -5,3 +5,5 @@ printers.json
 .env
 *.log
 *.zip
+data/
+*.tmp

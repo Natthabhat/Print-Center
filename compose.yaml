@@ -1,0 +1,26 @@
+services:
+  print-center:
+    build: .
+    image: print-center:local
+    container_name: print-center
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DASHBOARD_BIND: ${DASHBOARD_BIND:-127.0.0.1}
+      DASHBOARD_PORT: ${DASHBOARD_PORT:-8787}
+      DASHBOARD_DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://'+os.getenv('DASHBOARD_BIND','127.0.0.1')+':'+os.getenv('DASHBOARD_PORT','8787')+'/api/printers',timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3

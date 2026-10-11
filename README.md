@@ -45,6 +45,23 @@ journalctl --user -u print-center -n 50
 
 For startup without a GUI login, configure systemd user lingering for your account if needed.
 
+## Docker on Ubuntu
+
+Docker Compose builds the image from this repository. It uses host networking for LAN printers and binds the web service only to `DASHBOARD_BIND`.
+
+```sh
+mkdir -p data
+sudo chown 1000:1000 data
+printf 'DASHBOARD_BIND=YOUR_TAILSCALE_IP\nDASHBOARD_PORT=8787\n' > .env
+docker compose build --pull
+docker compose up -d
+docker compose ps
+```
+
+To migrate an existing installation, copy its `printers.json` into `data/`, owned by UID/GID 1000, before starting the container. Stop the previous service before using the same port. Private settings stay in the mounted data directory across rebuilds.
+
+For updates after authenticating Git to this private repository, run `git pull`, `docker compose build --pull`, then `docker compose up -d`. Browser-downloaded source archives can also be used as the build context. The image is built locally; no registry image is published.
+
 ## Checks
 
 ```sh
