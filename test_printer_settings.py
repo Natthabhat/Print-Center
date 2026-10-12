@@ -3,6 +3,12 @@ from unittest.mock import patch
 import app
 
 class PrinterSettingsTests(unittest.TestCase):
+ def test_profile_inference_validation_and_safe_public_fields(self):
+  self.assertEqual(app.public_printer({'name':'Q2 1'})['profile'],'qidi-q2')
+  self.assertEqual(app.public_printer({'name':'U1'})['profile'],'snapmaker-u1')
+  self.assertEqual(app.public_printer({'name':'Custom','profile':'qidi-q2'})['profile'],'qidi-q2')
+  self.assertEqual(app.validate_printer_profile('generic'),'generic')
+  with self.assertRaises(ValueError):app.validate_printer_profile('invalid')
  def test_settings_persist_for_selected_printer_only_without_exposing_api_key(self):
   with tempfile.TemporaryDirectory() as root:
    config=pathlib.Path(root)/'printers.json'

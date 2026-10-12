@@ -192,7 +192,17 @@ def printers():
         return [{'id': 'qidi', 'name': 'Qidi', 'url': BASE, 'camera_base': 'http://' + PRINTER, 'api_key': ''}]
 
 def public_printer(p):
-    return {k: p.get(k) for k in ('id', 'name', 'url', 'camera_base')} | {'has_api_key': bool(p.get('api_key')), 'timelapse_mode':p.get('timelapse_mode','interval')}
+    return {k: p.get(k) for k in ('id', 'name', 'url', 'camera_base')} | {'has_api_key': bool(p.get('api_key')), 'timelapse_mode':p.get('timelapse_mode','interval'), 'profile':printer_profile(p)}
+
+def printer_profile(p):
+    profile = p.get('profile')
+    if profile in ('qidi-q2','snapmaker-u1','generic'): return profile
+    name = p.get('name','').lower()
+    return 'snapmaker-u1' if 'u1' in name else 'qidi-q2' if 'q2' in name else 'generic'
+
+def validate_printer_profile(profile):
+    if profile not in ('qidi-q2','snapmaker-u1','generic'): raise ValueError('Choose a supported printer profile')
+    return profile
 
 def save_printer_settings(pid, mode):
     if mode not in ('interval','layer'): raise ValueError('Choose a supported timelapse capture mode')
@@ -857,7 +867,8 @@ class Handler(BaseHTTPRequestHandler):
                         key = str(data.get('api_key', '')).strip() or existing.get('api_key', '')
                         if len(key) > 512 or '\n' in key or '\r' in key:
                             raise ValueError('Invalid API key')
-                        record = {'id': existing.get('id', secrets.token_hex(8)), 'name': name, 'url': url, 'camera_base': camera_base, 'api_key': key, 'timelapse_mode':existing.get('timelapse_mode','interval')}
+                        profile = validate_printer_profile(data.get('profile',printer_profile(existing)))
+                        record = {'id': existing.get('id', secrets.token_hex(8)), 'name': name, 'url': url, 'camera_base': camera_base, 'api_key': key, 'timelapse_mode':existing.get('timelapse_mode','interval'), 'profile':profile}
                         if any(p['url'] == url and p['id'] != record['id'] for p in values):
                             raise ValueError('That printer address is already saved')
                         if action == 'add':
