@@ -12,9 +12,9 @@ class PlateTests(unittest.TestCase):
    if path.startswith('/server/files/list'):return [{'path':filename}]
    if path.startswith('/printer/objects/query'):return {'status':{'print_stats':{'state':'standby','plateindex':'1'}}}
    return 'ok'
-  with patch.object(app,'api',side_effect=api) as requests,patch.object(app,'selected',return_value={'id':'one'}),patch.object(app,'control_status',return_value={'multi_color_controller':{'hardware':{'connected':True}}}),patch.object(app,'print_plan',return_value={'plate':1,'filaments':[]}),patch.object(app,'mapping_script',return_value='SAVE_VARIABLE VARIABLE=enable_box VALUE=1'):
+  with patch.object(app,'normalized_existing_print',return_value='normalized.gcode.3mf'),patch.object(app,'api',side_effect=api) as requests,patch.object(app,'selected',return_value={'id':'one'}),patch.object(app,'control_status',return_value={'multi_color_controller':{'hardware':{'connected':True}}}),patch.object(app,'print_plan',return_value={'plate':1,'filaments':[]}),patch.object(app,'mapping_script',return_value='SAVE_VARIABLE VARIABLE=enable_box VALUE=1'):
    handler.do_POST()
-  self.assertEqual(requests.call_args_list[-2:], [call('/printer/gcode/script',{'script':'SAVE_VARIABLE VARIABLE=enable_box VALUE=1'}),call('/printer/print/start',{'filename':filename},timeout=60)])
+  self.assertEqual(requests.call_args_list[-2:], [call('/printer/gcode/script',{'script':'SAVE_VARIABLE VARIABLE=enable_box VALUE=1'}),call('/printer/print/start',{'filename':'normalized.gcode.3mf'},timeout=60)])
   self.assertTrue(handler.reply.call_args.args[0]['ok'])
  def archive(self,numbers):
   source=io.BytesIO()

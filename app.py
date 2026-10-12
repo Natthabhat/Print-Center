@@ -434,6 +434,68 @@ def print_plan(filename):
 
 UPLOAD_LIMIT = 200 * 1024 * 1024
 
+def normalize_print_archive(source, destination, filename):
+    """Swap the selected plate with plate 1, preserving sliced toolpaths."""
+    import xml.etree.ElementTree as ET
+    source.seek(0)
+    with zipfile.ZipFile(source) as archive:
+        plate = choose_plate(filename, plate_numbers(archive))
+        if sum(i.file_size for i in archive.infolist()) > 512*1024*1024:
+            raise ValueError('Expanded 3MF is too large')
+        def swap_number(n):
+            return 1 if n == plate else plate if n == 1 else n
+        def rename(value):
+            return re.sub(r'(Metadata/(?:plate_no_light|plate|top|pick)_)(\d+)(?=[.])',
+                          lambda m:m[1]+str(swap_number(int(m[2]))),value)
+        with zipfile.ZipFile(destination,'w',compression=zipfile.ZIP_DEFLATED) as output:
+            for item in archive.infolist():
+                name = rename(item.filename)
+                if item.filename in ('Metadata/model_settings.config','Metadata/slice_info.config'):
+                    if item.file_size > 2*1024*1024: raise ValueError('Plate metadata is too large')
+                    root = ET.fromstring(archive.read(item))
+                    for element in root.iter('metadata'):
+                        value = element.get('value','')
+                        if element.get('key') in ('index','plater_id') and value.isdigit():
+                            element.set('value',str(swap_number(int(value))))
+                        else: element.set('value',rename(value))
+                    output.writestr(name,ET.tostring(root,encoding='utf-8',xml_declaration=True))
+                elif item.filename.endswith('.rels') or item.filename == '[Content_Types].xml':
+                    if item.file_size > 2*1024*1024: raise ValueError('Archive references are too large')
+                    output.writestr(name,rename(archive.read(item).decode('utf-8')).encode('utf-8'))
+                else:
+                    with archive.open(item) as incoming, output.open(name,'w') as outgoing:
+                        while chunk := incoming.read(65536): outgoing.write(chunk)
+    length = destination.tell()
+    if length > UPLOAD_LIMIT: raise ValueError('Normalized 3MF is too large')
+    destination.seek(0)
+    return length
+
+def plate_one_filename(filename):
+    return re.sub(r'_plate_\d+(?=\.gcode\.3mf$)','_plate_1',filename,flags=re.I)
+
+def normalized_existing_print(filename):
+    plan = print_plan(filename)
+    if plan['plate'] == 1: return filename
+    key = (CURRENT.printer['id'],'normalized:'+filename)
+    with LOCK: cached = CACHE.get(key)
+    if cached and cached[1]['modified'] == plan.get('modified'):
+        if any(f['path']==cached[1]['filename'] for f in api('/server/files/list?root=gcodes')):
+            return cached[1]['filename']
+    p = CURRENT.printer
+    request = urllib.request.Request(p['url']+'/server/files/gcodes/'+urllib.parse.quote(filename),
+                headers={'X-Api-Key':p['api_key']} if p.get('api_key') else {})
+    with tempfile.TemporaryFile() as source:
+        total = 0
+        with OPENER.open(request,timeout=30) as response:
+            while chunk := response.read(65536):
+                total += len(chunk)
+                if total > UPLOAD_LIMIT: raise ValueError('3MF exceeds supported archive size')
+                source.write(chunk)
+        source.seek(0)
+        result = upload_print_file(source,total,filename)
+    with LOCK: CACHE[key]=(time.monotonic(),{'filename':result['filename'],'modified':plan.get('modified')})
+    return result['filename']
+
 def upload_filename(value):
     if not isinstance(value,str) or not value or len(value.encode('utf-8'))>200 or any(ord(c)<32 for c in value) or any(c in value for c in ('/','\\','"')) or value.startswith('.'):
         raise ValueError('Invalid upload filename')
@@ -442,6 +504,14 @@ def upload_filename(value):
     return value
 
 def upload_print_file(source, length, filename):
+    if filename.lower().endswith('.gcode.3mf'):
+        with tempfile.TemporaryFile() as normalized:
+            try: length = normalize_print_archive(source,normalized,filename)
+            except zipfile.BadZipFile: raise ValueError('Invalid sliced 3MF archive')
+            return send_print_file(normalized,length,plate_one_filename(filename))
+    return send_print_file(source,length,filename)
+
+def send_print_file(source, length, filename):
     filename = upload_filename(filename)
     available = api('/server/files/list?root=gcodes')
     if filename in {f['path'] for f in available}:
@@ -802,10 +872,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('A print job is already active')
                 record = data.get('timelapse',False)
                 if type(record) is not bool: raise ValueError('Invalid timelapse selection')
-                def prepare_recording():
+                def prepare_recording(watch_filename=filename):
                     if record:
                         snapshot, read_state = timelapse_callbacks(dict(CURRENT.printer))
-                        TIMELAPSES.prepare(CURRENT.printer['id'],filename,snapshot,read_state)
+                        TIMELAPSES.prepare(CURRENT.printer['id'],watch_filename,snapshot,read_state)
                 if filename.lower().endswith('.gcode.3mf'):
                     if 'plateindex' not in print_status:
                         raise ValueError('This printer needs a plain G-code file. Export G-code from your slicer.')
@@ -816,8 +886,9 @@ class Handler(BaseHTTPRequestHandler):
                         api('/printer/gcode/script', {'script':script})
                     # Match the installed Fluidd client: Moonraker stages the
                     # 3MF in its cache before issuing SDCARD_PRINT_FILE.
-                    prepare_recording()
-                    result = api('/printer/print/start', {'filename': filename}, timeout=60)
+                    start_filename = normalized_existing_print(filename)
+                    prepare_recording(start_filename)
+                    result = api('/printer/print/start', {'filename': start_filename}, timeout=60)
                 else:
                     prepare_recording()
                     result = api('/printer/print/start', {'filename': filename})
