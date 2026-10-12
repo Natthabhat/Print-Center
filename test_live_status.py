@@ -3,6 +3,23 @@ from unittest.mock import patch
 from live_status import merge_status, wanted_objects, PrinterFeed
 
 class LiveTests(unittest.TestCase):
+ def test_partial_box_update_preserves_materials_and_settings(self):
+  status={'multi_color_controller':{'config':{'enable_box':1,'vendor_slot0':0,'slot1':1},'slots':{'materials':{'slot0':{'color':'#ffffff','filament':{'type':'PLA'}},'slot1':{'color':'#000000'}},'last_loaded':'slot0'}}}
+  delta={'multi_color_controller':{'config':{'slot1':3},'slots':{'materials':{'slot0':{'color':'#ff0000'}}}}}
+  merge_status(status,delta)
+  box=status['multi_color_controller']
+  self.assertEqual(box['config'],{'enable_box':1,'vendor_slot0':0,'slot1':3})
+  self.assertEqual(box['slots']['materials']['slot0'],{'color':'#ff0000','filament':{'type':'PLA'}})
+  self.assertEqual(box['slots']['materials']['slot1']['color'],'#000000')
+  self.assertEqual(box['slots']['last_loaded'],'slot0')
+  delta['multi_color_controller']['slots']['materials']['slot0']['color']='changed'
+  self.assertEqual(box['slots']['materials']['slot0']['color'],'#ff0000')
+ def test_explicit_null_and_lists_replace_previous_values(self):
+  status={'object':{'nested':{'old':1},'items':[1,2]}}
+  merge_status(status,{'object':{'nested':None,'items':[]}})
+  self.assertEqual(status,{'object':{'nested':None,'items':[]}})
+  merge_status(status,{'object':{'nested':{'new':2}}})
+  self.assertEqual(status['object']['nested'],{'new':2})
  def test_delta_preserves_unchanged_fields_and_is_detached(self):
   status={'extruder':{'temperature':30,'target':200},'print_stats':{'state':'printing','info':{'total_layer':20}}}
   delta={'extruder':{'temperature':31},'print_stats':{'filament_used':100}}

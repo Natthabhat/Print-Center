@@ -16,7 +16,9 @@ def wanted_objects(objects):
 def merge_status(status, delta):
     for key, fields in delta.items():
         if isinstance(fields, dict):
-            status.setdefault(key, {}).update(copy.deepcopy(fields))
+            if not isinstance(status.get(key), dict):
+                status[key] = {}
+            merge_status(status[key], fields)
         else:
             status[key] = copy.deepcopy(fields)
 

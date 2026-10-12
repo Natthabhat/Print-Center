@@ -1,6 +1,21 @@
-import io,zipfile,unittest
+import io,zipfile,unittest,json
+from unittest.mock import patch,Mock,call
 import app
 class PlateTests(unittest.TestCase):
+ def test_3mf_start_uses_moonraker_staging_after_mapping(self):
+  filename='extension grip.gcode.3mf'
+  data=json.dumps({'action':'start','printer':'one','filename':filename,'use_box':True,'mapping':{'0':1}}).encode()
+  handler=object.__new__(app.Handler)
+  handler.path='/api/control';handler.headers={'Content-Length':str(len(data)),'X-Control-Token':app.TOKEN};handler.rfile=io.BytesIO(data)
+  handler.host_ok=lambda:True;handler.origin_ok=lambda:True;handler.authenticated=lambda:True;handler.reply=Mock()
+  def api(path,data=None,**kwargs):
+   if path.startswith('/server/files/list'):return [{'path':filename}]
+   if path.startswith('/printer/objects/query'):return {'status':{'print_stats':{'state':'standby','plateindex':'1'}}}
+   return 'ok'
+  with patch.object(app,'api',side_effect=api) as requests,patch.object(app,'selected',return_value={'id':'one'}),patch.object(app,'control_status',return_value={'multi_color_controller':{'hardware':{'connected':True}}}),patch.object(app,'print_plan',return_value={'plate':1,'filaments':[]}),patch.object(app,'mapping_script',return_value='SAVE_VARIABLE VARIABLE=enable_box VALUE=1'):
+   handler.do_POST()
+  self.assertEqual(requests.call_args_list[-2:], [call('/printer/gcode/script',{'script':'SAVE_VARIABLE VARIABLE=enable_box VALUE=1'}),call('/printer/print/start',{'filename':filename},timeout=60)])
+  self.assertTrue(handler.reply.call_args.args[0]['ok'])
  def archive(self,numbers):
   source=io.BytesIO()
   with zipfile.ZipFile(source,'w') as z:

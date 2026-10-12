@@ -3,6 +3,7 @@ import http.client, tempfile
 import copy
 import hmac
 from web_auth import WebAuth
+from timelapse import Timelapses
 from live_status import PrinterFeed
 from camera_monitor import SnapmakerCamera
 from box_control import parse_catalog, box_script, plate_filaments, mapping_script
@@ -22,6 +23,7 @@ LOGIN = WebAuth()
 PORT = int(os.environ.get('DASHBOARD_PORT', '8787'))
 TOKEN = secrets.token_urlsafe(32)
 CONFIG = pathlib.Path(os.environ.get('DASHBOARD_DATA_DIR', str(ROOT))) / 'printers.json'
+TIMELAPSES = Timelapses(CONFIG.parent)
 LOCK = threading.RLock()
 CURRENT = threading.local()
 CACHE = {}
@@ -294,14 +296,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 OPENER = urllib.request.build_opener(NoRedirect)
-def api(path, data=None):
+def api(path, data=None, timeout=8):
     body = None if data is None else json.dumps(data).encode()
     p = CURRENT.printer
     headers = {'Content-Type': 'application/json'}
     if p.get('api_key'):
         headers['X-Api-Key'] = p['api_key']
     req = urllib.request.Request(p['url'] + path, body, headers)
-    with OPENER.open(req, timeout=8) as response:
+    with OPENER.open(req, timeout=timeout) as response:
         value = json.load(response)
     if 'error' in value:
         raise ValueError(str(value['error']))
@@ -478,6 +480,20 @@ def upload_print_file(source, length, filename):
     finally:
         connection.close()
 
+def timelapse_callbacks(printer):
+    def snapshot():
+        CURRENT.printer = printer
+        cam = camera()
+        if not cam: raise ValueError('No camera configured for this printer')
+        if cam.get('service') == 'snapmaker-lan':
+            return snapmaker_camera().snapshot(OPENER)
+        with OPENER.open(camera_url(cam['snapshot_url']), timeout=12) as response:
+            return response.read(10*1024*1024)
+    def state():
+        CURRENT.printer = printer
+        return api('/printer/objects/query?print_stats')['status']['print_stats']
+    return snapshot, state
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     def reply(self, value, status=200, kind='application/json', headers=None):
@@ -590,6 +606,33 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply({'printers': [public_printer(p) for p in printers()]})
             if path.startswith(('/api/', '/camera/')):
                 CURRENT.printer = selected(query.get('printer', ['qidi'])[0])
+            if path == '/api/timelapses':
+                return self.reply({'videos': TIMELAPSES.list(CURRENT.printer['id'])})
+            if path == '/api/timelapse/video':
+                folder = TIMELAPSES.path(query.get('id',[''])[0])
+                row = json.loads((folder/'record.json').read_text())
+                if row['printer'] != CURRENT.printer['id'] or row['status'] != 'ready':
+                    return self.reply({'error':'Video is not available'},404)
+                file = folder/'video.mp4';size=file.stat().st_size;start=0;end=size-1
+                range_header=self.headers.get('Range')
+                if range_header:
+                    match=re.fullmatch(r'bytes=(\d+)-(\d*)',range_header)
+                    if not match:return self.reply({'error':'Unsupported range'},416)
+                    start=int(match[1]);end=min(end,int(match[2])) if match[2] else end
+                    if start>end:return self.reply({'error':'Invalid range'},416)
+                self.send_response(206 if range_header else 200)
+                self.send_header('Content-Type','video/mp4');self.send_header('Content-Length',str(end-start+1))
+                self.send_header('Accept-Ranges','bytes');self.send_header('Cache-Control','no-store')
+                if range_header:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+                if query.get('download')==['1']:self.send_header('Content-Disposition','attachment; filename="print-center-'+row['id']+'.mp4"')
+                self.end_headers()
+                with file.open('rb') as source:
+                    source.seek(start);remaining=end-start+1
+                    while remaining and self.session_active():
+                        chunk=source.read(min(65536,remaining))
+                        if not chunk:break
+                        self.wfile.write(chunk);remaining-=len(chunk)
+                return
             if path == '/':
                 page = (ROOT/'index.html').read_bytes().replace(b'__CONTROL_TOKEN__', TOKEN.encode()).replace(b'__PUBLIC_ACCESS__', b'1' if PUBLIC_HOST and self.headers.get('Host') == PUBLIC_HOST else b'0')
                 self.reply(page, kind='text/html; charset=utf-8')
@@ -757,17 +800,26 @@ class Handler(BaseHTTPRequestHandler):
                 state = print_status['state']
                 if state in ('printing','paused'):
                     raise ValueError('A print job is already active')
+                record = data.get('timelapse',False)
+                if type(record) is not bool: raise ValueError('Invalid timelapse selection')
+                def prepare_recording():
+                    if record:
+                        snapshot, read_state = timelapse_callbacks(dict(CURRENT.printer))
+                        TIMELAPSES.prepare(CURRENT.printer['id'],filename,snapshot,read_state)
                 if filename.lower().endswith('.gcode.3mf'):
                     if 'plateindex' not in print_status:
                         raise ValueError('This printer needs a plain G-code file. Export G-code from your slicer.')
                     status = control_status()
                     if status.get('multi_color_controller',{}).get('hardware',{}).get('connected'):
                         plan = print_plan(filename)
-                        script = mapping_script(data,status,plan['filaments'])+'\n'+qidi_start_script(filename,plan['plate'])
-                    else:
-                        script = qidi_start_script(filename,archive_print_plate(filename))
-                    result = api('/printer/gcode/script', {'script':script})
+                        script = mapping_script(data,status,plan['filaments'])
+                        api('/printer/gcode/script', {'script':script})
+                    # Match the installed Fluidd client: Moonraker stages the
+                    # 3MF in its cache before issuing SDCARD_PRINT_FILE.
+                    prepare_recording()
+                    result = api('/printer/print/start', {'filename': filename}, timeout=60)
                 else:
+                    prepare_recording()
                     result = api('/printer/print/start', {'filename': filename})
             elif action == 'box':
                 script = box_script(data, control_status(), box_catalog())
