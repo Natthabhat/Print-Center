@@ -3,6 +3,16 @@ from unittest.mock import patch
 from timelapse import Timelapses
 
 class TimelapseTests(unittest.TestCase):
+ def test_thumbnail_generated_once_and_requires_matching_printer(self):
+  with tempfile.TemporaryDirectory() as root:
+   t=Timelapses(root);key='e'*24
+   t.save({'id':key,'printer':'p','status':'ready'})
+   def ffmpeg(args,**kwargs):pathlib.Path(args[-1]).write_bytes(b'jpeg')
+   with patch('timelapse.subprocess.run',side_effect=ffmpeg) as run:
+    with self.assertRaises(ValueError):t.thumbnail(key,'other')
+    self.assertEqual(t.thumbnail(key,'p'),b'jpeg')
+    self.assertEqual(t.thumbnail(key,'p'),b'jpeg')
+    self.assertEqual(run.call_count,1)
  def test_ids_cannot_escape_storage(self):
   t=Timelapses('/tmp/test')
   for value in ['../config','/etc/passwd','x',None]:

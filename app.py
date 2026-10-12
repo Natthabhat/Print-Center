@@ -678,6 +678,8 @@ class Handler(BaseHTTPRequestHandler):
                 CURRENT.printer = selected(query.get('printer', ['qidi'])[0])
             if path == '/api/timelapses':
                 return self.reply({'videos': TIMELAPSES.list(CURRENT.printer['id'])})
+            if path == '/api/timelapse/thumbnail':
+                return self.reply(TIMELAPSES.thumbnail(query.get('id',[''])[0],CURRENT.printer['id']),kind='image/jpeg')
             if path == '/api/timelapse/video':
                 folder = TIMELAPSES.path(query.get('id',[''])[0])
                 row = json.loads((folder/'record.json').read_text())

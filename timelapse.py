@@ -6,6 +6,7 @@ class Timelapses:
         self.root = pathlib.Path(root)/'timelapses'
         self.lock = threading.RLock()
         self.render_lock = threading.Lock()
+        self.thumbnail_lock = threading.Lock()
         self.active = {}
 
     def path(self, key):
@@ -16,6 +17,25 @@ class Timelapses:
     def save(self, row):
         folder=self.path(row['id']);folder.mkdir(parents=True,exist_ok=True)
         temp=folder/'record.tmp';temp.write_text(json.dumps(row));temp.replace(folder/'record.json')
+
+    def thumbnail(self, key, printer):
+        folder = self.path(key)
+        row = json.loads((folder/'record.json').read_text())
+        if row['printer'] != printer or row['status'] != 'ready':
+            raise ValueError('Video is not available')
+        target = folder/'thumbnail.jpg'
+        with self.thumbnail_lock:
+            if not target.exists():
+                temporary = folder/'thumbnail.tmp.jpg'
+                try:
+                    subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y',
+                        '-i',str(folder/'video.mp4'),'-frames:v','1','-vf','scale=480:-2',
+                        '-threads','1',str(temporary)],check=True,timeout=20,
+                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                    temporary.replace(target)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        return target.read_bytes()
 
     def list(self, printer):
         rows=[]
