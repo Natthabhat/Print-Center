@@ -3,6 +3,19 @@ from unittest.mock import patch
 from timelapse import Timelapses
 
 class TimelapseTests(unittest.TestCase):
+ def test_layer_mode_captures_changes_once_and_skips_pause(self):
+  with tempfile.TemporaryDirectory() as root:
+   t=Timelapses(root);row={'id':'f'*24,'printer':'p','filename':'job','created':1,'status':'waiting','frames':0,'interval':10,'fps':30,'error':'','mode':'layer'};t.save(row)
+   states=iter([{'state':state,'filename':'job','info':{'current_layer':layer}} for state,layer in [('printing',0),('printing',1),('printing',1),('paused',2),('printing',2),('printing',2),('printing',3),('complete',3)]])
+   with patch('timelapse.time.sleep'),patch.object(t,'render'):
+    t.run(row,lambda:b'\xff\xd8test\xff\xd9',lambda:next(states))
+   self.assertEqual(row['frames'],3)
+ def test_missing_layer_updates_do_not_silently_capture_by_time(self):
+  with tempfile.TemporaryDirectory() as root:
+   t=Timelapses(root);row={'id':'a'*24,'printer':'p','filename':'job','created':1,'status':'waiting','frames':0,'interval':10,'fps':30,'error':'','mode':'layer'};t.save(row)
+   states=iter([{'state':'printing','filename':'job'},{'state':'complete','filename':'job'}])
+   with patch('timelapse.time.sleep'):t.run(row,lambda:self.fail('No layer should mean no capture'),lambda:next(states))
+   self.assertEqual(row['frames'],0);self.assertEqual(row['status'],'error');self.assertIn('layer updates',row['error'])
  def test_thumbnail_generated_once_and_requires_matching_printer(self):
   with tempfile.TemporaryDirectory() as root:
    t=Timelapses(root);key='e'*24

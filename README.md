@@ -1,5 +1,7 @@
 # Print Center
 
+Each printer has a **Printer settings** page. Choose timelapse capture **Every 10 seconds** (default) or **Every layer change**, then save. Settings persist on the server separately for each printer and apply to future jobs when **Record timelapse** is checked. Layer capture follows `print_stats.info.current_layer` from Moonraker; the sliced file must report layer changes to Klipper. It captures a camera frame without toolhead parking. Paused jobs do not trigger layer captures. Existing recordings keep the capture mode selected when they started.
+
 A self-hosted dashboard for managing multiple Klipper 3D printers through Moonraker. Designed for an Ubuntu server on a private LAN or Tailscale network.
 
 ## Features

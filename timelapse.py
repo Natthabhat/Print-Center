@@ -50,7 +50,8 @@ class Timelapses:
                 except (OSError,ValueError,KeyError):pass
         return sorted(rows,key=lambda r:r['created'],reverse=True)
 
-    def prepare(self, printer, filename, snapshot, state):
+    def prepare(self, printer, filename, snapshot, state, mode='interval'):
+        if mode not in ('interval','layer'):raise ValueError('Invalid timelapse capture mode')
         if not shutil.which('ffmpeg'):raise ValueError('Timelapse renderer is unavailable')
         self.root.mkdir(parents=True,exist_ok=True)
         if shutil.disk_usage(self.root).free<1024**3:raise ValueError('Timelapse needs at least 1 GB of free storage')
@@ -58,14 +59,14 @@ class Timelapses:
             if printer in self.active:raise ValueError('A timelapse is already recording for this printer')
             frame=snapshot()
             if not frame.startswith(b'\xff\xd8') or b'\xff\xd9' not in frame[-16:]:raise ValueError('Camera did not return a JPEG snapshot')
-            row={'id':secrets.token_hex(12),'printer':printer,'filename':filename,'created':time.time(),'status':'waiting','frames':0,'interval':10,'fps':30,'error':''}
+            row={'id':secrets.token_hex(12),'printer':printer,'filename':filename,'created':time.time(),'status':'waiting','frames':0,'interval':10,'fps':30,'error':'','mode':mode}
             self.save(row);self.active[printer]=row['id']
             threading.Thread(target=self.run,args=(row,snapshot,state),daemon=True).start()
             return row['id']
 
     def run(self,row,snapshot,state):
         folder=self.path(row['id']);frames=folder/'frames';frames.mkdir(exist_ok=True)
-        started=False;deadline=time.monotonic()+300;last=0;errors=0;total=0
+        started=False;deadline=time.monotonic()+300;last=0;errors=0;total=0;last_layer=None
         try:
             while True:
                 try:
@@ -79,16 +80,23 @@ class Timelapses:
                     if printing and current.get('filename')==row['filename']:started=True;row['status']='recording'
                     elif time.monotonic()>deadline:raise ValueError('Print did not start; recording was not captured')
                 elif not printing or current.get('filename')!=row['filename']:break
-                if started and time.monotonic()-last>=row['interval']:
+                layer=current.get('info',{}).get('current_layer') if isinstance(current.get('info'),dict) else None
+                valid_layer=type(layer) is int and layer>0
+                layer_mode=row.get('mode','interval')=='layer'
+                capture=valid_layer and layer!=last_layer and current.get('state')=='printing' if layer_mode else time.monotonic()-last>=row['interval']
+                if started and layer_mode and not valid_layer:
+                    row['error']='Waiting for layer updates from the sliced file';self.save(row)
+                if started and capture:
                     try:
                         frame=snapshot()
                         if not frame.startswith(b'\xff\xd8') or b'\xff\xd9' not in frame[-16:]:raise ValueError('Incomplete camera frame')
                         if total+len(frame)>512*1024**2 or shutil.disk_usage(folder).free<512*1024**2:break
                         (frames/f'{row["frames"]:06d}.jpg').write_bytes(frame)
                         total+=len(frame);row['frames']+=1;row['error']=''
+                        if layer_mode:last_layer=layer
                     except Exception as error:row['error']='Camera: '+str(error)
                     last=time.monotonic();self.save(row)
-                time.sleep(2)
+                time.sleep(.25 if layer_mode else 2)
             if not row['frames']:raise ValueError(row['error'] or 'No camera frames were captured')
             row['status']='rendering';self.save(row)
             self.render(row)

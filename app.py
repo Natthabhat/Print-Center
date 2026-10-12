@@ -192,7 +192,17 @@ def printers():
         return [{'id': 'qidi', 'name': 'Qidi', 'url': BASE, 'camera_base': 'http://' + PRINTER, 'api_key': ''}]
 
 def public_printer(p):
-    return {k: p.get(k) for k in ('id', 'name', 'url', 'camera_base')} | {'has_api_key': bool(p.get('api_key'))}
+    return {k: p.get(k) for k in ('id', 'name', 'url', 'camera_base')} | {'has_api_key': bool(p.get('api_key')), 'timelapse_mode':p.get('timelapse_mode','interval')}
+
+def save_printer_settings(pid, mode):
+    if mode not in ('interval','layer'): raise ValueError('Choose a supported timelapse capture mode')
+    with LOCK:
+        values = printers()
+        printer = next((p for p in values if p['id']==pid),None)
+        if printer is None: raise ValueError('Select a saved printer')
+        printer['timelapse_mode'] = mode
+        save_printers(values)
+        return public_printer(printer)
 
 def save_printers(values):
     temp = CONFIG.with_suffix('.tmp')
@@ -561,6 +571,8 @@ def timelapse_callbacks(printer):
             return response.read(10*1024*1024)
     def state():
         CURRENT.printer = printer
+        _,status,_,error,_ = feed_for(printer).snapshot()
+        if not error and status.get('print_stats'): return status['print_stats']
         return api('/printer/objects/query?print_stats')['status']['print_stats']
     return snapshot, state
 
@@ -793,7 +805,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authenticated():
             return
         path = urllib.parse.urlsplit(self.path).path
-        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/logout'):
+        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/logout', '/api/printer-settings'):
             return self.reply({'error': 'Not found'}, 404)
         if not self.host_ok() or self.headers.get('X-Control-Token') != TOKEN:
             return self.reply({'error': 'Refresh this dashboard before using controls'}, 403)
@@ -845,7 +857,7 @@ class Handler(BaseHTTPRequestHandler):
                         key = str(data.get('api_key', '')).strip() or existing.get('api_key', '')
                         if len(key) > 512 or '\n' in key or '\r' in key:
                             raise ValueError('Invalid API key')
-                        record = {'id': existing.get('id', secrets.token_hex(8)), 'name': name, 'url': url, 'camera_base': camera_base, 'api_key': key}
+                        record = {'id': existing.get('id', secrets.token_hex(8)), 'name': name, 'url': url, 'camera_base': camera_base, 'api_key': key, 'timelapse_mode':existing.get('timelapse_mode','interval')}
                         if any(p['url'] == url and p['id'] != record['id'] for p in values):
                             raise ValueError('That printer address is already saved')
                         if action == 'add':
@@ -859,6 +871,8 @@ class Handler(BaseHTTPRequestHandler):
                     save_printers(values)
                 return self.reply({'printers': [public_printer(p) for p in values]})
             CURRENT.printer = selected(data.get('printer'))
+            if path == '/api/printer-settings':
+                return self.reply({'printer':save_printer_settings(CURRENT.printer['id'],data.get('timelapse_mode'))})
             action = data.get('action')
             if action in ('pause','resume','cancel','emergency_stop'):
                 endpoint = '/printer/emergency_stop' if action == 'emergency_stop' else '/printer/print/' + action
@@ -877,7 +891,7 @@ class Handler(BaseHTTPRequestHandler):
                 def prepare_recording(watch_filename=filename):
                     if record:
                         snapshot, read_state = timelapse_callbacks(dict(CURRENT.printer))
-                        TIMELAPSES.prepare(CURRENT.printer['id'],watch_filename,snapshot,read_state)
+                        TIMELAPSES.prepare(CURRENT.printer['id'],watch_filename,snapshot,read_state,mode=CURRENT.printer.get('timelapse_mode','interval'))
                 if filename.lower().endswith('.gcode.3mf'):
                     if 'plateindex' not in print_status:
                         raise ValueError('This printer needs a plain G-code file. Export G-code from your slicer.')
