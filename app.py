@@ -3,6 +3,7 @@ import http.client, tempfile
 import copy
 import hmac
 from web_auth import WebAuth
+from upload_jobs import UploadJobs, UploadBusy
 from plate_detection import PlateDetection
 from model_library import ModelLibrary
 from completion_status import CompletionStatus
@@ -547,6 +548,7 @@ def print_plan(filename):
     return value
 
 UPLOAD_LIMIT = 200 * 1024 * 1024
+UPLOADS = UploadJobs(CONFIG.parent/'uploads', UPLOAD_LIMIT)
 
 def normalize_print_archive(source, destination, filename):
     """Swap the selected plate with plate 1, preserving sliced toolpaths."""
@@ -610,6 +612,17 @@ def normalized_existing_print(filename):
     with LOCK: CACHE[key]=(time.monotonic(),{'filename':result['filename'],'modified':plan.get('modified')})
     return result['filename']
 
+def checked_upload_name(printer, value):
+    if printer_profile(printer) != 'bambu-x2d': return upload_filename(value)
+    if not isinstance(value, str) or not value or posixpath.basename(value) != value or '\\' in value:
+        raise ValueError('Choose a filename without folders')
+    return value
+
+def save_upload(job, source):
+    CURRENT.printer = selected(job['printer'])
+    if printer_profile(CURRENT.printer) == 'bambu-x2d': return bambu_files().upload(source, job['size'], job['filename'])
+    return upload_print_file(source, job['size'], job['filename'])
+
 def upload_filename(value):
     if not isinstance(value,str) or not value or len(value.encode('utf-8'))>200 or any(ord(c)<32 for c in value) or any(c in value for c in ('/','\\','"')) or value.startswith('.'):
         raise ValueError('Invalid upload filename')
@@ -619,7 +632,7 @@ def upload_filename(value):
 
 def upload_print_file(source, length, filename):
     if filename.lower().endswith('.gcode.3mf'):
-        with tempfile.TemporaryFile() as normalized:
+        with tempfile.TemporaryFile(dir=CONFIG.parent) as normalized:
             try: length = normalize_print_archive(source,normalized,filename)
             except zipfile.BadZipFile: raise ValueError('Invalid sliced 3MF archive')
             return send_print_file(normalized,length,plate_one_filename(filename))
@@ -804,6 +817,9 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
         try:
+            if path == '/api/upload/status':
+                try: return self.reply(UPLOADS.status(query.get('upload', [''])[0]))
+                except ValueError as error: return self.reply({'error': str(error)}, 404)
             if path == '/api/library':
                 return self.reply(LIBRARY.list(query.get('q',[''])[0],query.get('archived',['0'])[0]=='1',query.get('favorites',['0'])[0]=='1',query.get('offset',['0'])[0],query.get('folder',['all'])[0]))
             if path == '/api/library/preview':
@@ -960,7 +976,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authenticated():
             return
         path = urllib.parse.urlsplit(self.path).path
-        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/logout', '/api/printer-settings', '/api/printer-photo', '/api/plate-detection', '/api/library', '/api/library/upload'):
+        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/upload/start', '/api/upload/chunk', '/api/upload/finish', '/api/logout', '/api/printer-settings', '/api/printer-photo', '/api/plate-detection', '/api/library', '/api/library/upload'):
             return self.reply({'error': 'Not found'}, 404)
         if not self.host_ok() or self.headers.get('X-Control-Token') != TOKEN:
             return self.reply({'error': 'Refresh this dashboard before using controls'}, 403)
@@ -972,6 +988,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({'ok': True}, headers={'Set-Cookie': 'print_center_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict'})
         try:
             length = int(self.headers.get('Content-Length', '0'))
+            if path == '/api/upload/chunk':
+                self.close_connection = True
+                self.connection.settimeout(30)
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                try: offset = int(query.get('offset', [''])[0])
+                except ValueError: raise ValueError('Invalid upload offset')
+                try: return self.reply(UPLOADS.chunk(query.get('upload', [''])[0], offset, self.rfile, length))
+                except UploadBusy as error: return self.reply({'error': str(error)}, 409)
+            if path in ('/api/upload/start', '/api/upload/finish'):
+                if not 0 < length <= 8192: raise ValueError('Invalid request size')
+                data = json.loads(self.rfile.read(length))
+                if path == '/api/upload/finish': return self.reply(UPLOADS.finish(data.get('upload'), save_upload))
+                printer = selected(data.get('printer', ''))
+                return self.reply(UPLOADS.start(printer['id'], checked_upload_name(printer, data.get('filename', '')), data.get('size')))
             if path == '/api/library/upload':
                 self.close_connection=True;self.connection.settimeout(120)
                 query=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -1028,7 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
                 filename = query.get('filename',[''])[0] if is_bambu else upload_filename(query.get('filename',[''])[0])
                 if is_bambu and (posixpath.basename(filename)!=filename or '\\' in filename):raise ValueError('Choose a filename without folders')
                 self.connection.settimeout(120)
-                with tempfile.TemporaryFile(dir=CONFIG.parent if is_bambu else None) as source:
+                with tempfile.TemporaryFile(dir=CONFIG.parent) as source:
                     remaining = length
                     while remaining:
                         chunk = self.rfile.read(min(65536,remaining))

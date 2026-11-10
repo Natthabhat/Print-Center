@@ -14,3 +14,5 @@ CMD ["python", "app.py"]
 COPY completion_status.py ./
 
 COPY frame_cache.py ./
+
+COPY upload_jobs.py ./

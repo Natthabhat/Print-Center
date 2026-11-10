@@ -11,3 +11,4 @@ data/
 .pip-temp/
 *.tar
 web-sessions.json
+uploads/
