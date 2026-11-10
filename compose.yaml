@@ -13,6 +13,7 @@ services:
       DASHBOARD_AUTH_HASH: ${DASHBOARD_AUTH_HASH:-}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8787}
       DASHBOARD_DATA_DIR: /data
+      PRINT_CENTER_DATABASE_URL: ${PRINT_CENTER_DATABASE_URL:-}
     volumes:
       - ./data:/data
     read_only: true

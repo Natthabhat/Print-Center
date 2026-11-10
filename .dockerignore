@@ -6,3 +6,5 @@ printers.json
 __pycache__
 .venv
 *.zip
+.test-deps
+.pip-temp

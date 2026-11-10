@@ -3,8 +3,16 @@ import http.client, tempfile
 import copy
 import hmac
 from web_auth import WebAuth
+from plate_detection import PlateDetection
+from model_library import ModelLibrary
+from completion_status import CompletionStatus
+from frame_cache import FrameCache
+from printer_photos import photo_url, store_photo, PHOTO_NAME, UPLOAD_LIMIT as PHOTO_UPLOAD_LIMIT
 from timelapse import Timelapses
 from live_status import PrinterFeed
+from bambu import BambuFeed, validate_credentials
+from bambu_camera import BambuCamera
+from bambu_files import BambuFiles
 from camera_monitor import SnapmakerCamera
 from box_control import parse_catalog, box_script, plate_filaments, mapping_script
 import json, os, pathlib, secrets, urllib.request, urllib.parse, urllib.error, threading, ipaddress, time, posixpath, zipfile, io, re, math
@@ -19,11 +27,14 @@ PUBLIC_HOST = os.environ.get('DASHBOARD_PUBLIC_HOST', '').strip().lower()
 AUTH_USER = os.environ.get('DASHBOARD_AUTH_USER', '')
 AUTH_HASH = os.environ.get('DASHBOARD_AUTH_HASH', '')
 LOGIN_TOKEN = secrets.token_urlsafe(32)
-LOGIN = WebAuth()
 PORT = int(os.environ.get('DASHBOARD_PORT', '8787'))
 TOKEN = secrets.token_urlsafe(32)
 CONFIG = pathlib.Path(os.environ.get('DASHBOARD_DATA_DIR', str(ROOT))) / 'printers.json'
+LOGIN = WebAuth(CONFIG.parent/'web-sessions.json', AUTH_USER+'\0'+AUTH_HASH)
 TIMELAPSES = Timelapses(CONFIG.parent)
+PLATES = PlateDetection(CONFIG.parent)
+LIBRARY = ModelLibrary(CONFIG.parent)
+COMPLETION = CompletionStatus(CONFIG.parent/'completion-status.json')
 LOCK = threading.RLock()
 CURRENT = threading.local()
 CACHE = {}
@@ -31,6 +42,7 @@ IMAGE_CACHE = {}
 HEATER_CONFIG = {}
 FEEDS = {}
 CAMERAS = {}
+BAMBU_FILES = {}
 CAMERA_CONFIG = {}
 
 def heater_config():
@@ -192,16 +204,16 @@ def printers():
         return [{'id': 'qidi', 'name': 'Qidi', 'url': BASE, 'camera_base': 'http://' + PRINTER, 'api_key': ''}]
 
 def public_printer(p):
-    return {k: p.get(k) for k in ('id', 'name', 'url', 'camera_base')} | {'has_api_key': bool(p.get('api_key')), 'timelapse_mode':p.get('timelapse_mode','interval'), 'profile':printer_profile(p)}
+    return {k: p.get(k) for k in ('id', 'name', 'url', 'camera_base')} | {'has_api_key': bool(p.get('api_key')), 'has_access_code':bool(p.get('access_code')), 'serial':p.get('serial',''), 'timelapse_mode':p.get('timelapse_mode','interval'), 'profile':printer_profile(p), 'photo_url':photo_url(p), 'plate_ai_enabled':PLATES.config(p['id'])['enabled'] if p.get('id') else False}
 
 def printer_profile(p):
     profile = p.get('profile')
-    if profile in ('qidi-q2','snapmaker-u1','generic'): return profile
+    if profile in ('qidi-q2','snapmaker-u1','bambu-x2d','generic'): return profile
     name = p.get('name','').lower()
     return 'snapmaker-u1' if 'u1' in name else 'qidi-q2' if 'q2' in name else 'generic'
 
 def validate_printer_profile(profile):
-    if profile not in ('qidi-q2','snapmaker-u1','generic'): raise ValueError('Choose a supported printer profile')
+    if profile not in ('qidi-q2','snapmaker-u1','bambu-x2d','generic'): raise ValueError('Choose a supported printer profile')
     return profile
 
 def save_printer_settings(pid, mode):
@@ -224,6 +236,8 @@ def save_printers(values):
         valid_ids = {p['id'] for p in values}
         for key in list(FEEDS):
             if key[0] not in valid_ids: FEEDS.pop(key).close()
+        for key in list(BAMBU_FILES):
+            if key[0] not in valid_ids:BAMBU_FILES.pop(key)
 
 def valid_url(value, default_port=None):
     value = str(value).strip()
@@ -249,7 +263,40 @@ def selected(pid):
             return p
     raise ValueError('Select a saved printer')
 
+FILE_LISTS={}
+FILE_LIST_LOCKS={}
+def printer_files(refresh=False):
+    printer=CURRENT.printer
+    key=(printer['id'],printer['url'],printer.get('api_key',''))
+    with LOCK:
+        guard=FILE_LIST_LOCKS.setdefault(key,threading.Lock())
+        cached=FILE_LISTS.get(key)
+    if not refresh and cached and time.monotonic()-cached[0]<30:return cached[1]
+    with guard:
+        with LOCK:cached=FILE_LISTS.get(key)
+        if not refresh and cached and time.monotonic()-cached[0]<30:return cached[1]
+        value=api('/server/files/list?root=gcodes')
+        with LOCK:FILE_LISTS[key]=(time.monotonic(),value)
+        return value
+
+def warm_file_lists():
+    # Separate workers keep an offline printer from delaying healthy printers.
+    workers={}
+    def warm(printer):
+        try:
+            CURRENT.printer=printer
+            if printer_profile(printer)!='bambu-x2d':printer_files()
+        except Exception:pass
+    while True:
+        for printer in printers():
+            old=workers.get(printer['id'])
+            if old is None or not old.is_alive():
+                worker=threading.Thread(target=warm,args=(dict(printer),),daemon=True)
+                workers[printer['id']]=worker;worker.start()
+        time.sleep(20)
+
 def metadata(filename):
+    if printer_profile(CURRENT.printer)=='bambu-x2d':return bambu_files().archive_info(filename)[0]
     key = (CURRENT.printer['id'], filename)
     with LOCK:
         item = CACHE.get(key)
@@ -261,6 +308,10 @@ def metadata(filename):
     return value
 
 def thumbnail(filename, plate=''):
+    if printer_profile(CURRENT.printer)=='bambu-x2d':
+        image=bambu_files().archive_info(filename,plate=plate or None)[1]
+        if not image:raise ValueError('No thumbnail embedded in this printer file')
+        return image,'image/png'
     if not isinstance(filename, str) or filename.startswith('/') or '..' in pathlib.PurePosixPath(filename).parts or '\\' in filename:
         raise ValueError('Invalid print filename')
     p = CURRENT.printer
@@ -316,21 +367,30 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 OPENER = urllib.request.build_opener(NoRedirect)
-def api(path, data=None, timeout=8):
+def api(path, data=None, timeout=8, method=None):
     body = None if data is None else json.dumps(data).encode()
     p = CURRENT.printer
     headers = {'Content-Type': 'application/json'}
     if p.get('api_key'):
         headers['X-Api-Key'] = p['api_key']
-    req = urllib.request.Request(p['url'] + path, body, headers)
+    req = urllib.request.Request(p['url'] + path, body, headers, method=method)
     with OPENER.open(req, timeout=timeout) as response:
         value = json.load(response)
     if 'error' in value:
         raise ValueError(str(value['error']))
     return value.get('result', value)
 
+def existing_printer_file(filename):
+    if not isinstance(filename,str) or not filename or any(c in filename for c in ('\r','\n','\\','\0')) or filename.startswith('/') or '..' in filename.split('/'):
+        raise ValueError('Invalid printer filename')
+    if filename not in [f['path'] for f in api('/server/files/list?root=gcodes')]:raise ValueError('Select an existing printer file')
+    return filename
+
+
 def camera():
     p = CURRENT.printer
+    if printer_profile(p) == 'bambu-x2d':
+        return {'name':'Bambu LAN camera','service':'bambu-lan','rotation':0}
     key = (p['id'], p['url'], p.get('api_key', ''))
     with LOCK:
         cached = CAMERA_CONFIG.get(key)
@@ -354,6 +414,30 @@ def snapmaker_camera():
             CAMERAS[key] = SnapmakerCamera(p)
         return CAMERAS[key]
 
+def bambu_camera():
+    p = CURRENT.printer
+    key = (p['id'],p['url'],p.get('access_code',''),p.get('serial',''))
+    with LOCK:
+        for old in list(CAMERAS):
+            if old[0] == p['id'] and old != key and hasattr(CAMERAS[old],'close'):
+                CAMERAS.pop(old).close()
+        if key not in CAMERAS:
+            record=dict(p)
+            feed=feed_for(p)
+            if not record.get('serial') and feed.client:
+                record['serial']=getattr(feed.client,'printer_serial','')
+            CAMERAS[key] = BambuCamera(record)
+        return CAMERAS[key]
+
+def bambu_files():
+    p=CURRENT.printer
+    key=(p['id'],p['url'],p.get('access_code',''),p.get('serial',''))
+    with LOCK:
+        for old in list(BAMBU_FILES):
+            if old[0]==p['id'] and old!=key:BAMBU_FILES.pop(old)
+        if key not in BAMBU_FILES:BAMBU_FILES[key]=BambuFiles(p,CONFIG.parent/'bambu-cache')
+        return BAMBU_FILES[key]
+
 def camera_url(value):
     p = CURRENT.printer
     url = urllib.parse.urljoin(p['camera_base'] + '/', value)
@@ -364,12 +448,15 @@ def camera_url(value):
 
 
 def feed_for(printer):
-    key = (printer['id'],printer['url'],printer.get('api_key',''))
+    key = (printer['id'],printer['url'],printer.get('api_key',''),printer.get('access_code',''),printer.get('serial',''),printer_profile(printer))
     with LOCK:
         for old in list(FEEDS):
             if old[0] == printer['id'] and old != key:
                 FEEDS.pop(old).close()
         if key not in FEEDS:
+            if printer_profile(printer) == 'bambu-x2d':
+                FEEDS[key] = BambuFeed(printer)
+                return FEEDS[key]
             def read(path):
                 CURRENT.printer = printer
                 return api(path)
@@ -391,7 +478,14 @@ def feed_payload(printer, wait=False):
     if wait: feed.ready.wait(4)
     version,status,config,error,mode = feed.snapshot()
     if error: return version, {'error':error,'offline':True,'printer_id':printer['id']}
-    return version, {'status':status,'temperatures':temperature_rows(status,config),
+    rows = temperature_rows(status,config)
+    if printer_profile(printer)=='bambu-x2d':
+        for row in rows:
+            if row['id'] in ('extruder','heater_bed'):
+                row.update(editable=True,min=0,max=300 if row['id']=='extruder' else 110,configured_limit=False)
+                if row['id']=='extruder': row['name']='Active nozzle'
+    display_state=COMPLETION.display(printer['id'],status.get('print_stats',{}))
+    return version, {'status':status,'display_state':display_state,'temperatures':rows,
                      'controls':control_rows(status,config),'printer':public_printer(printer),
                      'connection_mode':mode}
 
@@ -577,6 +671,7 @@ def timelapse_callbacks(printer):
         if not cam: raise ValueError('No camera configured for this printer')
         if cam.get('service') == 'snapmaker-lan':
             return snapmaker_camera().snapshot(OPENER)
+        if cam.get('service') == 'bambu-lan': return bambu_camera().snapshot()
         with OPENER.open(camera_url(cam['snapshot_url']), timeout=12) as response:
             return response.read(10*1024*1024)
     def state():
@@ -593,10 +688,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(raw)))
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Cache-Control', (headers or {}).get('Cache-Control','no-store'))
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
-        for key, content in (headers or {}).items(): self.send_header(key, content)
+        for key, content in (headers or {}).items():
+            if key.lower()!='cache-control':self.send_header(key, content)
         self.end_headers()
         self.wfile.write(raw)
     def events(self, pid):
@@ -681,8 +777,13 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, TypeError):
             return self.reply({'error': 'Invalid login request'}, 400)
         LOGIN.clear_failures(address)
-        token = LOGIN.issue()
-        self.reply({'ok': True}, headers={'Set-Cookie': 'print_center_session='+token+'; Path=/; Max-Age=28800; HttpOnly; Secure; SameSite=Strict'})
+        remember = data.get('remember') is True
+        try:
+            token = LOGIN.issue(remember=remember)
+        except OSError:
+            return self.reply({'error':'Could not save your session. Please try again.'},503)
+        age = '; Max-Age='+str(WebAuth.REMEMBER_AGE) if remember else ''
+        self.reply({'ok': True}, headers={'Set-Cookie': 'print_center_session='+token+'; Path=/'+age+'; HttpOnly; Secure; SameSite=Strict'})
     def do_GET(self):
         if not self.host_ok():
             return self.reply({'error': 'Invalid host'}, 403)
@@ -692,12 +793,61 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
         try:
+            if path == '/api/library':
+                return self.reply(LIBRARY.list(query.get('q',[''])[0],query.get('archived',['0'])[0]=='1',query.get('favorites',['0'])[0]=='1',query.get('offset',['0'])[0],query.get('folder',['all'])[0]))
+            if path == '/api/library/preview':
+                return self.reply(LIBRARY.preview(query.get('id',[''])[0]),kind='image/webp')
+            if path == '/api/library/file':
+                row,file=LIBRARY.file(query.get('id',[''])[0])
+                self.send_response(200);self.send_header('Content-Type','application/octet-stream');self.send_header('Content-Length',str(row['bytes']))
+                self.send_header('Content-Disposition',"attachment; filename*=UTF-8''"+urllib.parse.quote(row['filename']));self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.close_connection=True
+                with file.open('rb') as source:
+                    while self.session_active() and (chunk:=source.read(65536)):self.wfile.write(chunk)
+                return
+            if path == '/library.js':
+                return self.reply((ROOT/'library.js').read_bytes(),kind='application/javascript; charset=utf-8')
+            if path.startswith('/printer-photos/'):
+                name = path.removeprefix('/printer-photos/')
+                if not PHOTO_NAME.fullmatch(name) or not any(p.get('photo') == name for p in printers()):
+                    return self.reply({'error': 'Photo not found'}, 404)
+                file = CONFIG.parent/'printer-photos'/name
+                if not file.is_file(): return self.reply({'error': 'Photo not found'}, 404)
+                return self.reply(file.read_bytes(), kind='image/webp')
             if path == '/api/events':
                 return self.events(query.get('printer',['all'])[0])
             if path == '/api/printers':
                 return self.reply({'printers': [public_printer(p) for p in printers()]})
             if path.startswith(('/api/', '/camera/')):
                 CURRENT.printer = selected(query.get('printer', ['qidi'])[0])
+                if printer_profile(CURRENT.printer) == 'bambu-x2d' and path not in ('/api/status','/api/camera','/api/timelapses','/camera/stream','/camera/snapshot','/api/files','/api/metadata','/api/thumbnail','/api/file-download','/api/bambu-print-plan','/api/plate-status','/api/plate-image'):
+                    return self.reply({'error':'This Bambu LAN profile currently supports live status and temperature monitoring. Files, camera, history and printer controls are not yet supported.'},400)
+            if path == '/api/bambu-print-plan':
+                return self.reply({'plates':bambu_files().archive_info(query.get('filename',[''])[0])[0].get('plates',[])})
+            if path == '/api/plate-status':
+                return self.reply(PLATES.view(CURRENT.printer))
+            if path == '/api/plate-image':
+                return self.reply(PLATES.image(CURRENT.printer,query.get('name',['latest'])[0]),kind='image/jpeg')
+            if path == '/api/file-download' and printer_profile(CURRENT.printer)!='bambu-x2d':
+                filename=existing_printer_file(query.get('filename',[''])[0])
+                printer=CURRENT.printer
+                headers={'X-Api-Key':printer['api_key']} if printer.get('api_key') else {}
+                req=urllib.request.Request(printer['url']+'/server/files/gcodes/'+urllib.parse.quote(filename,safe='/'),headers=headers)
+                with OPENER.open(req,timeout=30) as source:
+                    self.send_response(200);self.send_header('Content-Type','application/octet-stream');self.send_header('Cache-Control','no-store')
+                    self.send_header('Content-Disposition',"attachment; filename*=UTF-8''"+urllib.parse.quote(posixpath.basename(filename)))
+                    if source.headers.get('Content-Length'):self.send_header('Content-Length',source.headers['Content-Length'])
+                    self.end_headers();self.close_connection=True
+                    while self.session_active() and (chunk:=source.read(65536)):self.wfile.write(chunk)
+                return
+            if path == '/api/file-download' and printer_profile(CURRENT.printer)=='bambu-x2d':
+                name=query.get('filename',[''])[0]
+                with bambu_files().download(name) as (ftp,filename,size):
+                    self.send_response(200);self.send_header('Content-Type','application/octet-stream')
+                    self.send_header('Content-Length',str(size));self.send_header('Cache-Control','no-store')
+                    self.send_header('Content-Disposition',"attachment; filename*=UTF-8''"+urllib.parse.quote(posixpath.basename(filename)))
+                    self.end_headers();self.close_connection=True
+                    ftp.read_into(filename,self.wfile,size,self.session_active)
+                return
             if path == '/api/timelapses':
                 return self.reply({'videos': TIMELAPSES.list(CURRENT.printer['id'])})
             if path == '/api/timelapse/thumbnail':
@@ -730,6 +880,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/':
                 page = (ROOT/'index.html').read_bytes().replace(b'__CONTROL_TOKEN__', TOKEN.encode()).replace(b'__PUBLIC_ACCESS__', b'1' if PUBLIC_HOST and self.headers.get('Host') == PUBLIC_HOST else b'0')
                 self.reply(page, kind='text/html; charset=utf-8')
+            elif path in ('/printer-models/qidi-q2.png', '/printer-models/snapmaker-u1.png', '/printer-models/bambu-x2d-default.jpg'):
+                image = ROOT/'printer-models'/path.rsplit('/', 1)[1]
+                kind = {'.png':'image/png', '.webp':'image/webp', '.jpg':'image/jpeg'}[image.suffix]
+                self.reply(image.read_bytes(), kind=kind)
             elif path == '/app.js':
                 self.reply((ROOT/'app.js').read_bytes(), kind='text/javascript; charset=utf-8')
             elif path == '/api/history':
@@ -753,7 +907,7 @@ class Handler(BaseHTTPRequestHandler):
                 _, value = feed_payload(CURRENT.printer, wait=True)
                 self.reply(value, 502 if 'error' in value else 200)
             elif path == '/api/files':
-                self.reply(api('/server/files/list?root=gcodes'))
+                self.reply(bambu_files().listing(trash=query.get('trash')==['1'],refresh=query.get('refresh')==['1']) if printer_profile(CURRENT.printer)=='bambu-x2d' else printer_files(refresh=query.get('refresh')==['1']))
             elif path == '/api/camera':
                 cam = camera()
                 if cam:
@@ -764,43 +918,23 @@ class Handler(BaseHTTPRequestHandler):
             elif path == '/api/thumbnail':
                 filename = query.get('filename', [''])[0]
                 image, kind = thumbnail(filename, query.get('plate', [''])[0])
-                self.reply(image, kind=kind)
+                self.reply(image, kind=kind,headers={'Cache-Control':'private, max-age=60'})
             elif path in ('/camera/stream', '/camera/snapshot'):
-                cam = camera()
-                if not cam:
-                    return self.reply({'error': 'No camera configured'}, 404)
-                if cam.get('service') == 'snapmaker-lan':
-                    monitor = snapmaker_camera()
-                    frame = monitor.snapshot(OPENER)
-                    if path.endswith('snapshot'):
-                        return self.reply(frame, kind='image/jpeg')
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
-                    self.send_header('Cache-Control', 'no-store')
-                    self.send_header('Connection', 'close')
-                    self.end_headers()
-                    self.close_connection = True
-                    while True:
-                        if not self.session_active(): return
-                        self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(frame)).encode() + b'\r\n\r\n' + frame + b'\r\n')
-                        self.wfile.flush()
-                        time.sleep(2)
-                        try:
-                            frame = monitor.snapshot(OPENER)
-                        except Exception:
-                            return
-                url = camera_url(cam['stream_url' if path.endswith('stream') else 'snapshot_url'])
-                with OPENER.open(url, timeout=12) as response:
-                    self.send_response(200)
-                    self.send_header('Content-Type', response.headers.get('Content-Type', 'image/jpeg'))
-                    self.send_header('Cache-Control', 'no-store')
-                    self.send_header('Connection', 'close')
-                    self.end_headers()
-                    self.close_connection = True
-                    while chunk := response.read1(16384):
-                        if not self.session_active(): return
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
+                monitor=cached_camera(dict(CURRENT.printer))
+                frame=monitor.snapshot()
+                if path.endswith('snapshot'):
+                    return self.reply(frame,kind='image/jpeg',headers={'Cache-Control':'no-store'})
+                self.send_response(200)
+                self.send_header('Content-Type','multipart/x-mixed-replace; boundary=frame')
+                self.send_header('Cache-Control','no-store')
+                self.send_header('Connection','close')
+                self.end_headers();self.close_connection=True
+                while self.session_active():
+                    self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '+str(len(frame)).encode()+b'\r\n\r\n'+frame+b'\r\n')
+                    self.wfile.flush();time.sleep(.5)
+                    try:frame=monitor.snapshot()
+                    except Exception:return
+
             else:
                 self.reply({'error': 'Not found'}, 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -815,7 +949,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authenticated():
             return
         path = urllib.parse.urlsplit(self.path).path
-        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/logout', '/api/printer-settings'):
+        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/logout', '/api/printer-settings', '/api/printer-photo', '/api/plate-detection', '/api/library', '/api/library/upload'):
             return self.reply({'error': 'Not found'}, 404)
         if not self.host_ok() or self.headers.get('X-Control-Token') != TOKEN:
             return self.reply({'error': 'Refresh this dashboard before using controls'}, 403)
@@ -827,14 +961,63 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({'ok': True}, headers={'Set-Cookie': 'print_center_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict'})
         try:
             length = int(self.headers.get('Content-Length', '0'))
+            if path == '/api/library/upload':
+                self.close_connection=True;self.connection.settimeout(120)
+                query=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                return self.reply({'file':LIBRARY.upload(query.get('model',[''])[0],query.get('filename',[''])[0],self.rfile,length,query.get('profile',[''])[0])})
+            if path == '/api/library':
+                if not 0<length<=32768:raise ValueError('Invalid library request size')
+                data=json.loads(self.rfile.read(length));action=data.get('action')
+                if action=='delete_file':
+                    if data.get('confirmed') is not True:raise ValueError('Confirm file deletion')
+                    return self.reply(LIBRARY.delete_file(data.get('file')))
+                if action=='folder':return self.reply({'folder':LIBRARY.save_folder(data)})
+                if action=='delete_folder':
+                    if data.get('confirmed') is not True:raise ValueError('Confirm folder deletion')
+                    return self.reply(LIBRARY.delete_folder(data.get('id')))
+                if action=='assign':return self.reply(LIBRARY.assign(data.get('file'),data.get('profile')))
+                if action=='create':return self.reply({'model':LIBRARY.create(data)},201)
+                if action in ('edit','favorite','archive','restore'):return self.reply({'model':LIBRARY.update(data.get('id'),data)})
+                if action=='send':
+                    if data.get('confirmed') is not True:raise ValueError('Confirm this file was sliced for the selected printer')
+                    CURRENT.printer=selected(data.get('printer',''))
+                    profile=printer_profile(CURRENT.printer)
+                    row,file=LIBRARY.variant(data.get('model'),profile)
+                    name=row['filename']
+                    if name.lower().endswith('.3mf') and not name.lower().endswith('.gcode.3mf'):name=name[:-4]+'.gcode.3mf'
+                    with file.open('rb') as source:
+                        result=bambu_files().upload(source,row['bytes'],name) if profile=='bambu-x2d' else upload_print_file(source,row['bytes'],upload_filename(name))
+                    return self.reply({'ok':True,**result})
+                raise ValueError('Unknown library action')
+            if path == '/api/printer-photo':
+                self.close_connection = True
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                pid = selected(query.get('printer', [''])[0])['id']
+                if not 0 < length <= PHOTO_UPLOAD_LIMIT:
+                    raise ValueError('Choose a photo up to 5 MB')
+                self.connection.settimeout(30)
+                raw = self.rfile.read(length)
+                if len(raw) != length: raise ValueError('Incomplete photo upload')
+                reset = query.get('reset') == ['1']
+                name = '' if reset else store_photo(CONFIG.parent, raw)
+                with LOCK:
+                    values = printers()
+                    printer = next((p for p in values if p['id'] == pid), None)
+                    if printer is None: raise ValueError('Select a saved printer')
+                    if reset: printer.pop('photo', None)
+                    else: printer['photo'] = name
+                    save_printers(values)
+                return self.reply({'printer': public_printer(printer)})
             if path == '/api/upload':
                 self.close_connection = True
                 if not 0 < length <= UPLOAD_LIMIT: raise ValueError('Upload limit is 200 MB per file')
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 CURRENT.printer = selected(query.get('printer',[''])[0])
-                filename = upload_filename(query.get('filename',[''])[0])
+                is_bambu=printer_profile(CURRENT.printer)=='bambu-x2d'
+                filename = query.get('filename',[''])[0] if is_bambu else upload_filename(query.get('filename',[''])[0])
+                if is_bambu and (posixpath.basename(filename)!=filename or '\\' in filename):raise ValueError('Choose a filename without folders')
                 self.connection.settimeout(120)
-                with tempfile.TemporaryFile() as source:
+                with tempfile.TemporaryFile(dir=CONFIG.parent if is_bambu else None) as source:
                     remaining = length
                     while remaining:
                         chunk = self.rfile.read(min(65536,remaining))
@@ -842,7 +1025,7 @@ class Handler(BaseHTTPRequestHandler):
                         source.write(chunk)
                         remaining -= len(chunk)
                     source.seek(0)
-                    value = upload_print_file(source,length,filename)
+                    value = bambu_files().upload(source,length,filename) if is_bambu else upload_print_file(source,length,filename)
                 return self.reply({'ok':True,**value})
             if not 0 < length <= 8192:
                 return self.reply({'error': 'Invalid request size'}, 400)
@@ -859,16 +1042,27 @@ class Handler(BaseHTTPRequestHandler):
                         name = str(data.get('name', '')).strip()
                         if not 1 <= len(name) <= 60:
                             raise ValueError('Enter a printer name (up to 60 characters)')
-                        url = valid_url(data.get('url', ''), 7125)
-                        camera_base = valid_url(data.get('camera_base') or urllib.parse.urlsplit(url).scheme + '://' + urllib.parse.urlsplit(url).hostname)
-                        if urllib.parse.urlsplit(camera_base).hostname != urllib.parse.urlsplit(url).hostname:
-                            raise ValueError('Camera and Moonraker must use the same printer address')
                         existing = selected(data['id']) if action == 'edit' else {}
+                        profile = validate_printer_profile(data.get('profile',printer_profile(existing)))
+                        bambu = profile == 'bambu-x2d'
+                        address = str(data.get('url','')).replace('mqtts://','https://',1) if bambu else data.get('url','')
+                        url = valid_url(address, 8883 if bambu else 7125)
+                        if bambu:
+                            parsed_url = urllib.parse.urlsplit(url)
+                            if parsed_url.port != 8883: raise ValueError('Bambu LAN uses port 8883. Enter the printer IP without a Moonraker port.')
+                            url = 'mqtts://' + parsed_url.netloc
+                        camera_base = '' if bambu else valid_url(data.get('camera_base') or urllib.parse.urlsplit(url).scheme + '://' + urllib.parse.urlsplit(url).hostname)
+                        if not bambu and urllib.parse.urlsplit(camera_base).hostname != urllib.parse.urlsplit(url).hostname:
+                            raise ValueError('Camera and Moonraker must use the same printer address')
                         key = str(data.get('api_key', '')).strip() or existing.get('api_key', '')
                         if len(key) > 512 or '\n' in key or '\r' in key:
                             raise ValueError('Invalid API key')
                         profile = validate_printer_profile(data.get('profile',printer_profile(existing)))
                         record = {'id': existing.get('id', secrets.token_hex(8)), 'name': name, 'url': url, 'camera_base': camera_base, 'api_key': key, 'timelapse_mode':existing.get('timelapse_mode','interval'), 'profile':profile}
+                        if existing.get('photo'): record['photo'] = existing['photo']
+                        if bambu:
+                            record.update(validate_credentials(data,existing if printer_profile(existing)=='bambu-x2d' else {}))
+                            record['api_key'] = ''
                         if any(p['url'] == url and p['id'] != record['id'] for p in values):
                             raise ValueError('That printer address is already saved')
                         if action == 'add':
@@ -882,13 +1076,58 @@ class Handler(BaseHTTPRequestHandler):
                     save_printers(values)
                 return self.reply({'printers': [public_printer(p) for p in values]})
             CURRENT.printer = selected(data.get('printer'))
+            if path == '/api/plate-detection':
+                printer = dict(CURRENT.printer)
+                action = data.get('action')
+                if action == 'settings':
+                    return self.reply(PLATES.configure(printer,data))
+                snapshot, read_state = timelapse_callbacks(printer)
+                if action == 'reference':
+                    if read_state().get('state') not in ('standby','complete','completed','cancelled','error','ready'):
+                        raise ValueError('Save references only while the printer is idle and its state is known')
+                    if data.get('confirmed') is not True: raise ValueError('Confirm the physical plate condition first')
+                    return self.reply(PLATES.reference(printer,data.get('label'),snapshot(),confirmed=True))
+                if action == 'check':
+                    return self.reply(PLATES.start(printer,snapshot,read_state),202)
+                raise ValueError('Unknown plate detection action')
             if path == '/api/printer-settings':
                 return self.reply({'printer':save_printer_settings(CURRENT.printer['id'],data.get('timelapse_mode'))})
+            if printer_profile(CURRENT.printer) == 'bambu-x2d':
+                if data.get('action')=='start':
+                    feed=feed_for(CURRENT.printer)
+                    _,live,_,error,_=feed.snapshot()
+                    if error or live.get('print_stats',{}).get('state') not in ('standby','complete','cancelled'):raise ValueError('Wait until the printer is connected and idle')
+                    plates=bambu_files().archive_info(data.get('filename'))[0].get('plates',[])
+                    plate=next((p for p in plates if p['id']==data.get('plate')),None)
+                    if plate is None:raise ValueError('Select a sliced plate from this file')
+                    slots={int(u['id'])*4+int(s['id']):s for u in live.get('bambu',{}).get('ams',[]) for s in u.get('slots',[]) if str(u['id']).isdigit() and str(s['id']).isdigit()}
+                    mapping=data.get('ams_mapping',{})
+                    if not isinstance(mapping,dict):raise ValueError('Select filament slots')
+                    for f in plate['filaments']:
+                        slot=slots.get(mapping.get(str(f['id'])))
+                        if not slot or slot.get('material','Empty').upper()!=f['type'].upper():raise ValueError('Choose a loaded AMS slot matching each filament material')
+                    data['bambu_plate']=plate
+                    return self.reply({'ok':True,'result':feed.command(data)})
+                if data.get('action') in ('file_trash','file_restore'):
+                    if data['action']=='file_trash':
+                        _,live,_,error,_=feed_for(CURRENT.printer).snapshot()
+                        if error or live.get('print_stats',{}).get('state') in ('printing','paused','unknown',None):
+                            raise ValueError('Wait until the printer is idle before moving files to trash')
+                    return self.reply({'ok':True,**bambu_files().trash(data.get('filename'),restore=data['action']=='file_restore')})
+                return self.reply({'ok':True,'result':feed_for(CURRENT.printer).command(data)})
             action = data.get('action')
-            if action in ('pause','resume','cancel','emergency_stop'):
+            if action=='file_delete':
+                if data.get('confirmed') is not True:raise ValueError('Confirm file deletion first')
+                _,live,_,error,_=feed_for(CURRENT.printer).snapshot()
+                if error or live.get('print_stats',{}).get('state') not in ('standby','complete','cancelled'):raise ValueError('Wait until the printer is idle before deleting files')
+                filename=existing_printer_file(data.get('filename'))
+                return self.reply({'ok':True,'result':api('/server/files/gcodes/'+urllib.parse.quote(filename,safe='/'),method='DELETE')})
+            if action in ('pause' ,'resume','cancel','emergency_stop'):
                 endpoint = '/printer/emergency_stop' if action == 'emergency_stop' else '/printer/print/' + action
                 result = api(endpoint, {})
             elif action == 'start':
+                if PLATES.config(CURRENT.printer['id'])['enabled'] and data.get('plate_confirmed') is not True:
+                    raise ValueError('Confirm that you have checked the build plate before starting')
                 filename = data.get('filename')
                 available = api('/server/files/list?root=gcodes')
                 if filename not in [f['path'] for f in available] or not filename.lower().endswith(('.gcode', '.gco', '.g', '.gcode.3mf')):
@@ -941,7 +1180,60 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             self.reply({'error': str(error)}, 502)
 
+FRAME_CACHES={}
+def cached_camera(printer):
+    key=(printer['id'],printer['url'],printer.get('api_key',''),printer.get('access_code',''),printer.get('serial',''))
+    with LOCK:
+        if key not in FRAME_CACHES:
+            def read():
+                CURRENT.printer=printer
+                cam=camera()
+                if not cam:raise ValueError('No camera configured')
+                if cam.get('service')=='bambu-lan':return bambu_camera().snapshot(OPENER)
+                if cam.get('service')=='snapmaker-lan':return snapmaker_camera().snapshot(OPENER)
+                with OPENER.open(camera_url(cam['snapshot_url']),timeout=8) as response:
+                    return response.read(4*1024*1024+1)
+            FRAME_CACHES[key]=FrameCache(read)
+        return FRAME_CACHES[key]
+
+def background_printers():
+    while True:
+        try:
+            values=printers();ids={p['id'] for p in values}
+            for printer in values:
+                try:
+                    feed=feed_for(printer)
+                    _,status,_,error,_=feed.snapshot()
+                    if not error:COMPLETION.display(printer['id'],status.get('print_stats',{}))
+                    cached_camera(printer)
+                except Exception:continue
+            with LOCK:
+                for key in list(FRAME_CACHES):
+                    current=next((p for p in values if p['id']==key[0]),None)
+                    if current is None or key!=(current['id'],current['url'],current.get('api_key',''),current.get('access_code',''),current.get('serial','')):
+                        FRAME_CACHES.pop(key).close()
+                for key in list(FEEDS):
+                    if key[0] not in ids:FEEDS.pop(key).close()
+        except Exception:pass
+        time.sleep(5)
+
+def automatic_plate_checks():
+    while True:
+        time.sleep(5)
+        for printer in printers():
+            try:
+                if not PLATES.config(printer['id'])['enabled']: continue
+                _,status,_,error,_ = feed_for(printer).snapshot()
+                if error: continue
+                snapshot,read_state = timelapse_callbacks(dict(printer))
+                PLATES.automatic_tick(dict(printer),status.get('print_stats',{}),snapshot,read_state)
+            except Exception:
+                continue
+
 if __name__ == '__main__':
+    threading.Thread(target=background_printers,daemon=True).start()
+    threading.Thread(target=warm_file_lists,daemon=True).start()
+    threading.Thread(target=automatic_plate_checks,daemon=True).start()
     addresses = list(dict.fromkeys([BIND] + ([EXTRA_BIND] if EXTRA_BIND else [])))
     servers = [ThreadingHTTPServer((address, PORT), Handler) for address in addresses]
     for server in servers[1:]:

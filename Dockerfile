@@ -5,6 +5,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py app.js index.html login.html web_auth.py box_control.py live_status.py camera_monitor.py timelapse.py ./
+COPY bambu.py bambu_camera.py bambu_files.py bambu_ca.pem ./
+COPY printer_photos.py plate_detection.py model_library.py library.js ./
+COPY printer-models ./printer-models
 RUN mkdir /data && chown 1000:1000 /data
 USER 1000:1000
 CMD ["python", "app.py"]
+COPY completion_status.py ./
+
+COPY frame_cache.py ./

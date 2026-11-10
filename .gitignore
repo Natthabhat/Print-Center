@@ -7,3 +7,7 @@ printers.json
 *.zip
 data/
 *.tmp
+.test-deps/
+.pip-temp/
+*.tar
+web-sessions.json
