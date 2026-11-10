@@ -757,13 +757,24 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({'error': 'Sign in to Print Center'}, 401)
         return False
 
+    def login_client(self):
+        """Rate-limit key. Behind a local tunnel every peer is this host, so use the
+        client IP the tunnel reports; other peers cannot supply that header."""
+        peer = self.client_address[0]
+        if peer not in {'127.0.0.1', '::1', BIND, EXTRA_BIND}:
+            return peer
+        try:
+            return str(ipaddress.ip_address(self.headers.get('CF-Connecting-IP', '').strip()))
+        except ValueError:
+            return peer
+
     def login(self):
         self.close_connection = True
         if not PUBLIC_HOST or self.headers.get('Host') != PUBLIC_HOST or not AUTH_HASH or not AUTH_USER:
             return self.reply({'error': 'Login is unavailable on this address'}, 403)
         if not self.origin_ok() or not hmac.compare_digest(self.headers.get('X-Login-Token',''), LOGIN_TOKEN):
             return self.reply({'error': 'Refresh the login page and try again'}, 403)
-        address = self.client_address[0]
+        address = self.login_client()
         if LOGIN.limited(address):
             return self.reply({'error': 'Too many sign-in attempts. Try again in a minute.'}, 429)
         try:
