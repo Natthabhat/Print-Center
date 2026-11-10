@@ -120,6 +120,16 @@ class UploadEndpointTests(unittest.TestCase):
         self.assertEqual(state['state'], 'done')
         self.assertEqual(saved, {'data': b'G1X1', 'length': 4, 'filename': 'part.gcode'})
 
+    def test_printer_timeout_becomes_clear_error(self):
+        import urllib.error
+        printer = {'id': 'qidi', 'url': 'http://192.0.2.1:7125'}
+        job = {'printer': 'qidi', 'size': 1, 'filename': 'a.gcode'}
+        for failure in (TimeoutError('timed out'), urllib.error.URLError(TimeoutError('timed out'))):
+            with patch.object(app, 'selected', return_value=printer), patch.object(app, 'upload_print_file', side_effect=failure):
+                with self.assertRaisesRegex(ValueError, 'did not respond in time'): app.save_upload(job, io.BytesIO(b'a'))
+        with patch.object(app, 'selected', return_value=printer), patch.object(app, 'upload_print_file', side_effect=urllib.error.URLError('refused')):
+            with self.assertRaises(urllib.error.URLError): app.save_upload(job, io.BytesIO(b'a'))
+
     def test_start_rejects_folder_names(self):
         with patch.object(app, 'selected', return_value={'id': 'qidi', 'url': 'http://192.0.2.1:7125'}):
             status, _ = self.handler('/api/upload/start', json.dumps({'printer': 'qidi', 'filename': '../x.gcode', 'size': 4}).encode())

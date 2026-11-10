@@ -276,7 +276,7 @@ def printer_files(refresh=False):
     with guard:
         with LOCK:cached=FILE_LISTS.get(key)
         if not refresh and cached and time.monotonic()-cached[0]<30:return cached[1]
-        value=api('/server/files/list?root=gcodes')
+        value=api('/server/files/list?root=gcodes', timeout=FILE_LIST_TIMEOUT)
         with LOCK:FILE_LISTS[key]=(time.monotonic(),value)
         return value
 
@@ -368,6 +368,9 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 OPENER = urllib.request.build_opener(NoRedirect)
+# Printers with many files can take 10 s or more to list them.
+FILE_LIST_TIMEOUT = 60
+
 def api(path, data=None, timeout=8, method=None):
     body = None if data is None else json.dumps(data).encode()
     p = CURRENT.printer
@@ -384,7 +387,7 @@ def api(path, data=None, timeout=8, method=None):
 def existing_printer_file(filename):
     if not isinstance(filename,str) or not filename or any(c in filename for c in ('\r','\n','\\','\0')) or filename.startswith('/') or '..' in filename.split('/'):
         raise ValueError('Invalid printer filename')
-    if filename not in [f['path'] for f in api('/server/files/list?root=gcodes')]:raise ValueError('Select an existing printer file')
+    if filename not in [f['path'] for f in api('/server/files/list?root=gcodes', timeout=FILE_LIST_TIMEOUT)]:raise ValueError('Select an existing printer file')
     return filename
 
 
@@ -535,7 +538,7 @@ def archive_print_plate(filename):
     return archive_print_plan(filename)['plate']
 
 def print_plan(filename):
-    files = api('/server/files/list?root=gcodes')
+    files = api('/server/files/list?root=gcodes', timeout=FILE_LIST_TIMEOUT)
     item = next((f for f in files if f['path']==filename),None)
     if not item: raise ValueError('Select an existing print file')
     key = (CURRENT.printer['id'],'print_plan:'+filename)
@@ -595,7 +598,7 @@ def normalized_existing_print(filename):
     key = (CURRENT.printer['id'],'normalized:'+filename)
     with LOCK: cached = CACHE.get(key)
     if cached and cached[1]['modified'] == plan.get('modified'):
-        if any(f['path']==cached[1]['filename'] for f in api('/server/files/list?root=gcodes')):
+        if any(f['path']==cached[1]['filename'] for f in api('/server/files/list?root=gcodes', timeout=FILE_LIST_TIMEOUT)):
             return cached[1]['filename']
     p = CURRENT.printer
     request = urllib.request.Request(p['url']+'/server/files/gcodes/'+urllib.parse.quote(filename),
@@ -620,8 +623,12 @@ def checked_upload_name(printer, value):
 
 def save_upload(job, source):
     CURRENT.printer = selected(job['printer'])
-    if printer_profile(CURRENT.printer) == 'bambu-x2d': return bambu_files().upload(source, job['size'], job['filename'])
-    return upload_print_file(source, job['size'], job['filename'])
+    try:
+        if printer_profile(CURRENT.printer) == 'bambu-x2d': return bambu_files().upload(source, job['size'], job['filename'])
+        return upload_print_file(source, job['size'], job['filename'])
+    except (TimeoutError, urllib.error.URLError) as error:
+        if isinstance(error, urllib.error.URLError) and not isinstance(error.reason, TimeoutError): raise
+        raise ValueError('The printer did not respond in time. Check that it is online, then try again.')
 
 def upload_filename(value):
     if not isinstance(value,str) or not value or len(value.encode('utf-8'))>200 or any(ord(c)<32 for c in value) or any(c in value for c in ('/','\\','"')) or value.startswith('.'):
@@ -640,7 +647,7 @@ def upload_print_file(source, length, filename):
 
 def send_print_file(source, length, filename):
     filename = upload_filename(filename)
-    available = api('/server/files/list?root=gcodes')
+    available = api('/server/files/list?root=gcodes', timeout=FILE_LIST_TIMEOUT)
     if filename in {f['path'] for f in available}:
         suffix = '.gcode.3mf' if filename.lower().endswith('.gcode.3mf') else pathlib.PurePosixPath(filename).suffix
         filename = filename[:-len(suffix)]+'_'+secrets.token_hex(4)+suffix
@@ -1170,7 +1177,7 @@ class Handler(BaseHTTPRequestHandler):
                 if PLATES.config(CURRENT.printer['id'])['enabled'] and data.get('plate_confirmed') is not True:
                     raise ValueError('Confirm that you have checked the build plate before starting')
                 filename = data.get('filename')
-                available = api('/server/files/list?root=gcodes')
+                available = api('/server/files/list?root=gcodes', timeout=FILE_LIST_TIMEOUT)
                 if filename not in [f['path'] for f in available] or not filename.lower().endswith(('.gcode', '.gco', '.g', '.gcode.3mf')):
                     raise ValueError('Select an existing G-code file')
                 print_status = api('/printer/objects/query?print_stats')['status']['print_stats']
