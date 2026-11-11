@@ -5,6 +5,8 @@ import hmac
 from web_auth import WebAuth
 from upload_jobs import UploadJobs, UploadBusy
 import u1_filament
+import gzip
+from web_assets import StaticFiles, compressible, accepts_gzip, etag_matches, home_payload, MIN_COMPRESS, YEAR, REVALIDATE
 from plate_detection import PlateDetection
 from model_library import ModelLibrary
 from completion_status import CompletionStatus
@@ -54,7 +56,7 @@ def heater_config():
         cached = HEATER_CONFIG.get(key)
     if cached and time.monotonic() - cached[0] < 86400:
         return cached[1]
-    config = api('/printer/objects/query?configfile')['status']['configfile']
+    config = api('/printer/objects/query?configfile=config,settings')['status']['configfile']
     settings = {k: dict(v) for k, v in config.get('config', {}).items()}
     for k, v in config.get('settings', {}).items():
         settings.setdefault(k, {}).update(v)
@@ -591,7 +593,10 @@ def print_plan(filename):
 
 UPLOAD_LIMIT = 200 * 1024 * 1024
 # Site icons are public so the sign-in page can show them.
-ICONS = {'/favicon.ico': 'favicon.ico', **{'/icons/'+name: name for name in ('favicon-32.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png')}}
+ICONS = {'/favicon.ico': 'favicon.ico', **{'/icons/'+name: name for name in ('favicon-32.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'logo-68.webp', 'logo-112.webp')}}
+STATIC = StaticFiles()
+IMAGE_KINDS = {'.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.ico': 'image/x-icon'}
+PRINTER_MODELS = ('qidi-q2.webp', 'snapmaker-u1-small.webp', 'bambu-x2d-default.webp')
 UPLOADS = UploadJobs(CONFIG.parent/'uploads', UPLOAD_LIMIT)
 
 def normalize_print_archive(source, destination, filename):
@@ -744,18 +749,35 @@ def timelapse_callbacks(printer):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
-    def reply(self, value, status=200, kind='application/json', headers=None):
+    def reply(self, value, status=200, kind='application/json', headers=None, gzipped=None):
         raw = value if isinstance(value, bytes) else json.dumps(value).encode()
+        squeeze = compressible(kind) and len(raw) >= MIN_COMPRESS
+        if squeeze and accepts_gzip(getattr(self, 'headers', None)):
+            raw = gzipped if gzipped is not None else gzip.compress(raw, 5)
+            headers = {**(headers or {}), 'Content-Encoding': 'gzip'}
         self.send_response(status)
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(raw)))
+        if squeeze: self.send_header('Vary', 'Accept-Encoding')
         self.send_header('Cache-Control', (headers or {}).get('Cache-Control','no-store'))
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
         for key, content in (headers or {}).items():
             if key.lower()!='cache-control':self.send_header(key, content)
         self.end_headers()
-        self.wfile.write(raw)
+        try: self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError): self.close_connection = True  # the browser left; nothing to report
+    def send_static(self, path, kind, cache):
+        """Serve a file with an ETag so a browser that already has it gets a tiny 304 instead."""
+        item = STATIC.get(path)
+        if etag_matches(self.headers, item['etag']):
+            self.send_response(304)
+            self.send_header('ETag', item['etag'])
+            self.send_header('Cache-Control', cache)
+            self.end_headers()
+            return
+        self.reply(item['raw'], kind=kind, headers={'Cache-Control': cache, 'ETag': item['etag']},
+                   gzipped=STATIC.gzipped(item) if compressible(kind) else None)
     def events(self, pid):
         values = printers() if pid == 'all' else [selected(pid)]
         self.send_response(200)
@@ -767,6 +789,7 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True
         versions = {}
         last_sent = {}
+        sent = {}
         heartbeat = 0
         try:
             while True:
@@ -774,9 +797,12 @@ class Handler(BaseHTTPRequestHandler):
                 for printer in values:
                     version,data = feed_payload(printer)
                     if versions.get(printer['id']) != version or time.monotonic()-last_sent.get(printer['id'],0)>=10:
-                        raw = json.dumps({'printer':printer['id'],'data':data})
-                        self.wfile.write(('data: '+raw+'\n\n').encode())
                         versions[printer['id']] = version
+                        # The home page only needs each card's summary; skip updates that change nothing it shows.
+                        raw = json.dumps({'printer':printer['id'],'data':home_payload(data) if pid == 'all' else data})
+                        if raw == sent.get(printer['id']) and time.monotonic()-last_sent.get(printer['id'],0)<10: continue
+                        self.wfile.write(('data: '+raw+'\n\n').encode())
+                        sent[printer['id']] = raw
                         last_sent[printer['id']] = time.monotonic()
                 if time.monotonic()-heartbeat>15:
                     self.wfile.write(b': heartbeat\n\n')
@@ -861,7 +887,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({'error': 'Invalid host'}, 403)
         icon = ICONS.get(urllib.parse.urlsplit(self.path).path)
         if icon:
-            return self.reply((ROOT/'icons'/icon).read_bytes(), kind='image/x-icon' if icon.endswith('.ico') else 'image/png', headers={'Cache-Control': 'public, max-age=86400'})
+            return self.send_static(ROOT/'icons'/icon, IMAGE_KINDS[pathlib.PurePath(icon).suffix], 'public, max-age=86400')
         if not self.authenticated():
             return
         parsed = urllib.parse.urlsplit(self.path)
@@ -882,15 +908,16 @@ class Handler(BaseHTTPRequestHandler):
                 with file.open('rb') as source:
                     while self.session_active() and (chunk:=source.read(65536)):self.wfile.write(chunk)
                 return
-            if path == '/library.js':
-                return self.reply((ROOT/'library.js').read_bytes(),kind='application/javascript; charset=utf-8')
+            if path in ('/library.js', '/app.js'):
+                return self.send_static(ROOT/path[1:], 'text/javascript; charset=utf-8', YEAR if 'v' in query else REVALIDATE)
             if path.startswith('/printer-photos/'):
                 name = path.removeprefix('/printer-photos/')
                 if not PHOTO_NAME.fullmatch(name) or not any(p.get('photo') == name for p in printers()):
                     return self.reply({'error': 'Photo not found'}, 404)
                 file = CONFIG.parent/'printer-photos'/name
                 if not file.is_file(): return self.reply({'error': 'Photo not found'}, 404)
-                return self.reply(file.read_bytes(), kind='image/webp')
+                # Photo names are content hashes, so a cached copy can never be stale.
+                return self.send_static(file, 'image/webp', YEAR)
             if path == '/api/events':
                 return self.events(query.get('printer',['all'])[0])
             if path == '/api/printers':
@@ -956,14 +983,11 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(chunk);remaining-=len(chunk)
                 return
             if path == '/':
-                page = (ROOT/'index.html').read_bytes().replace(b'__CONTROL_TOKEN__', TOKEN.encode()).replace(b'__PUBLIC_ACCESS__', b'1' if PUBLIC_HOST and self.headers.get('Host') == PUBLIC_HOST else b'0')
+                page = STATIC.versioned_page((ROOT/'index.html').read_bytes(), ROOT).replace(b'__CONTROL_TOKEN__', TOKEN.encode()).replace(b'__PUBLIC_ACCESS__', b'1' if PUBLIC_HOST and self.headers.get('Host') == PUBLIC_HOST else b'0')
                 self.reply(page, kind='text/html; charset=utf-8')
-            elif path in ('/printer-models/qidi-q2.png', '/printer-models/snapmaker-u1.png', '/printer-models/bambu-x2d-default.jpg'):
+            elif path.startswith('/printer-models/') and path.rsplit('/', 1)[1] in PRINTER_MODELS:
                 image = ROOT/'printer-models'/path.rsplit('/', 1)[1]
-                kind = {'.png':'image/png', '.webp':'image/webp', '.jpg':'image/jpeg'}[image.suffix]
-                self.reply(image.read_bytes(), kind=kind)
-            elif path == '/app.js':
-                self.reply((ROOT/'app.js').read_bytes(), kind='text/javascript; charset=utf-8')
+                self.send_static(image, IMAGE_KINDS[image.suffix], 'private, max-age=604800')
             elif path == '/api/history':
                 start = int(query.get('start',['0'])[0])
                 order = query.get('order',['desc'])[0]

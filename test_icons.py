@@ -10,7 +10,7 @@ class IconTests(unittest.TestCase):
         h.path = path
         h.command = 'GET'
         h.headers = {'Host': host}
-        h.reply = lambda value, status=200, kind='application/json', headers=None: setattr(h, 'result', (status, value, kind, headers))
+        h.reply = lambda value, status=200, kind='application/json', headers=None, **kw: setattr(h, 'result', (status, value, kind, headers))
         with patch.object(app, 'PUBLIC_HOST', 'printer.example.com'), patch.object(app, 'AUTH_USER', 'owner'), patch.object(app, 'AUTH_HASH', 'hash'):
             h.do_GET()
         return h.result

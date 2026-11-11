@@ -60,10 +60,14 @@ class PrinterFeed:
         if self.socket: self.socket.close()
 
     def run(self):
-        failures = 0
+        self.failures = 0
+        # Printer config only changes when Klipper restarts, so keep it across network reconnects.
+        self.reload_config = True
         while not self.stop.is_set():
             try:
-                self.invalidate()
+                if self.reload_config:
+                    self.invalidate()
+                    self.reload_config = False
                 objects = self.api('/printer/objects/list')['objects']
                 self.config = self.configuration()
                 wanted = wanted_objects(objects)
@@ -79,10 +83,12 @@ class PrinterFeed:
                             self.publish(error='Moonraker subscription rejected',mode='offline')
                             ws.close()
                             return
+                        self.failures = 0
                         self.publish(value['result']['status'], mode='websocket')
                     elif value.get('method') == 'notify_status_update':
                         self.publish(value['params'][0], mode='websocket', delta=True)
                     elif value.get('method') in ('notify_klippy_ready','notify_klippy_disconnected','notify_klippy_shutdown'):
+                        self.reload_config = True
                         self.publish(error='Klipper is reconnecting',mode='connecting')
                         ws.close()
                     elif value.get('method') == 'notify_filelist_changed':
@@ -98,8 +104,9 @@ class PrinterFeed:
                     self.config = self.configuration()
                     query = '&'.join(urllib.parse.quote(x) for x in wanted_objects(objects))
                     self.publish(self.api('/printer/objects/query?'+query)['status'],mode='polling')
-                    failures = 0
+                    self.failures = 0
                 except Exception as fallback_error:
                     self.publish(error=str(fallback_error),mode='offline')
-                    failures += 1
-            self.stop.wait(min(30,5*max(1,failures)))
+                    self.failures += 1
+            # Retry quickly after a short drop (common on Wi-Fi printers); back off to 15 s while it stays down.
+            self.stop.wait(min(15, 3 * max(1, self.failures)))
