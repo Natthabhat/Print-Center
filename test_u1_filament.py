@@ -61,6 +61,18 @@ class ScriptTests(unittest.TestCase):
             with self.assertRaises(ValueError): u1_filament.scripts(*args)
 
 
+class ColorTests(unittest.TestCase):
+    def test_matches_touchscreen_command(self):
+        self.assertEqual(u1_filament.color_script(3, '#d81b60', STATUS), 'SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=3 FILAMENT_COLOR_RGBA=D81B60FF')
+        self.assertTrue(all(r['can_color'] for r in u1_filament.slots(STATUS)))
+
+    def test_rejects_bad_colours_slots_and_busy_printer(self):
+        for args in ((0, 'red', STATUS), (0, '#12345', STATUS), (0, '#123456 X=1', STATUS), (0, None, STATUS), (4, '#FFFFFF', STATUS),
+                     (True, '#FFFFFF', STATUS), (0, '#FFFFFF', status(print_stats={'state': 'printing'}))):
+            with self.assertRaises(ValueError): u1_filament.color_script(*args)
+        self.assertFalse(any(r['can_color'] for r in u1_filament.slots(status(print_stats={'state': 'printing'}))))
+
+
 class ActionTests(unittest.TestCase):
     def setUp(self):
         app.U1_FILAMENT_JOBS.clear()
@@ -104,6 +116,16 @@ class ActionTests(unittest.TestCase):
         self.run_job(api)
         self.assertNotIn(u1_filament.STOP, sent)
         self.assertIn('Lost contact', app.U1_FILAMENT_JOBS['u1']['error'])
+
+    def test_colour_is_sent_immediately(self):
+        sent = []
+        def api(path, data=None, **kw):
+            if path.startswith('/printer/objects/query'): return {'status': STATUS}
+            sent.append(data['script'])
+        with patch.object(app, 'api', side_effect=api):
+            self.assertEqual(app.start_u1_filament({'mode': 'color', 'extruder': 1, 'color': '#1e88e5'}), {'color': '#1E88E5', 'extruder': 1})
+        self.assertEqual(sent, ['SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=1 FILAMENT_COLOR_RGBA=1E88E5FF'])
+        self.assertNotIn('u1', app.U1_FILAMENT_JOBS)
 
     def test_only_one_change_at_a_time_and_only_on_u1(self):
         app.U1_FILAMENT_JOBS['u1'] = {'running': True}

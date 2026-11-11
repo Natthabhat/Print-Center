@@ -522,6 +522,9 @@ def start_u1_filament(data):
     if printer_profile(printer) != 'snapmaker-u1': raise ValueError('Filament load and unload is only available on the Snapmaker U1')
     status = api('/printer/objects/query?' + '&'.join(urllib.parse.quote(x) for x in u1_filament.OBJECTS))['status']
     mode, index = data.get('mode'), data.get('extruder')
+    if mode == 'color':
+        api('/printer/gcode/script', {'script': u1_filament.color_script(index, data.get('color'), status)})
+        return {'color': data['color'].upper(), 'extruder': index}
     steps = u1_filament.scripts(mode, index, status)
     with U1_FILAMENT_LOCK:
         if (U1_FILAMENT_JOBS.get(printer['id']) or {}).get('running'): raise ValueError('A filament change is already running')

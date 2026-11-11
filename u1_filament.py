@@ -63,6 +63,7 @@ def slots(status):
             'detected': detected, 'module': channel.get('module_exist') is True, 'state': state,
             'label': STATE_LABELS.get(state, state.replace('_', ' ').capitalize() or 'Not reported'),
             'error': error if error not in (None, '', 'ok') else None,
+            'can_color': not busy,
             'can_load': ready and detected and state in PARKED,
             # Unknown states are allowed so a slot left in an unexpected state can still be cleared.
             'can_unload': ready and (state == 'load_finish' or bool(state) and state not in STATE_LABELS),
@@ -88,6 +89,14 @@ def scripts(mode, index, status):
         steps = ['AUTO_FEEDING_BATCH ACTION=DOING STAGE=prepare EXTRUDER=%d UNLOAD=1' % index,
                  'AUTO_FEEDING_BATCH ACTION=DOING STAGE=doing EXTRUDER=%d UNLOAD=1' % index]
     return ['AUTO_FEEDING_BATCH ACTION=START', *steps]
+
+
+def color_script(index, color, status):
+    """Set a slot's filament colour the way the U1 touchscreen does."""
+    if type(index) is not int or not 0 <= index < SLOTS: raise ValueError('Choose extruder T1 to T4')
+    if not isinstance(color, str) or not re.fullmatch(r'#[0-9A-Fa-f]{6}', color): raise ValueError('Choose a colour like #D81B60')
+    if printer_busy(status): raise ValueError('Wait until the printer is idle before changing the filament colour')
+    return 'SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=%d FILAMENT_COLOR_RGBA=%sFF' % (index, color[1:].upper())
 
 
 STOP = 'AUTO_FEEDING_BATCH ACTION=STOP'
