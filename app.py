@@ -839,7 +839,7 @@ class Handler(BaseHTTPRequestHandler):
             return True
         self.close_connection = True
         if self.command == 'GET' and urllib.parse.urlsplit(self.path).path in ('/', '/login'):
-            self.reply((ROOT/'login.html').read_bytes().replace(b'__LOGIN_TOKEN__', LOGIN_TOKEN.encode()), kind='text/html; charset=utf-8')
+            self.reply(STATIC.versioned_page((ROOT/'login.html').read_bytes(), ROOT).replace(b'__LOGIN_TOKEN__', LOGIN_TOKEN.encode()), kind='text/html; charset=utf-8')
         else:
             self.reply({'error': 'Sign in to Print Center'}, 401)
         return False
@@ -887,7 +887,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({'error': 'Invalid host'}, 403)
         icon = ICONS.get(urllib.parse.urlsplit(self.path).path)
         if icon:
-            return self.send_static(ROOT/'icons'/icon, IMAGE_KINDS[pathlib.PurePath(icon).suffix], 'public, max-age=86400')
+            return self.send_static(ROOT/'icons'/icon, IMAGE_KINDS[pathlib.PurePath(icon).suffix], 'public, max-age=31536000, immutable' if 'v=' in urllib.parse.urlsplit(self.path).query else 'public, max-age=3600')
         if not self.authenticated():
             return
         parsed = urllib.parse.urlsplit(self.path)

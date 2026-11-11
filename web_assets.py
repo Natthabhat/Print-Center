@@ -52,7 +52,12 @@ class StaticFiles:
         """Point the page's script tags at the scripts' content hashes, so browsers can cache them for a year."""
         def stamp(match):
             return match[1] + b'?v=' + self.get(root / match[2].decode())['hash'].encode()
-        return re.sub(rb'(src="/((?:app|library)\.js))\?v=[^"]*', stamp, page)
+        page = re.sub(rb'(src="/((?:app|library)\.js))\?v=[^"]*', stamp, page)
+        # Browsers keep favicons in a separate long-lived cache; a new URL is the only reliable way to swap them.
+        def icon(match):
+            name = 'favicon.ico' if match[2] == b'favicon.ico' else match[2].decode()
+            return match[1] + b'?v=' + self.get(root / 'icons' / name)['hash'].encode() + b'"'
+        return re.sub(rb'((?:href|src)="/(?:icons/)?((?:favicon\.ico|favicon-32\.png|icon-192\.png|icon-512\.png|apple-touch-icon\.png|logo-68\.webp|logo-112\.webp)))"', icon, page)
 
 
 def home_payload(data):

@@ -62,6 +62,12 @@ class StaticTests(unittest.TestCase):
         (root / 'app.js').write_text('changed')
         self.assertNotEqual(files.versioned_page(b'<script src="/app.js?v=old">', root), page[:len(page)])
 
+    def test_icon_links_get_content_hashes(self):
+        for name in ('index.html', 'login.html'):
+            page = app.STATIC.versioned_page((app.ROOT / name).read_bytes(), app.ROOT)
+            self.assertIn(b'href="/favicon.ico?v=' + app.STATIC.get(app.ROOT / 'icons' / 'favicon.ico')['hash'].encode() + b'"', page)
+            self.assertNotIn(b'.png"', page.split(b'</head>')[0])
+
     def test_real_page_references_real_files(self):
         page = app.STATIC.versioned_page((app.ROOT / 'index.html').read_bytes(), app.ROOT)
         self.assertNotIn(b'app.js?v=caselight', page)
