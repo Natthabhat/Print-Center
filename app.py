@@ -4,6 +4,7 @@ import copy
 import hmac
 from web_auth import WebAuth
 from upload_jobs import UploadJobs, UploadBusy
+import u1_filament
 from plate_detection import PlateDetection
 from model_library import ModelLibrary
 from completion_status import CompletionStatus
@@ -491,7 +492,42 @@ def feed_payload(printer, wait=False):
     display_state=COMPLETION.display(printer['id'],status.get('print_stats',{}))
     return version, {'status':status,'display_state':display_state,'temperatures':rows,
                      'controls':control_rows(status,config),'printer':public_printer(printer),
-                     'connection_mode':mode}
+                     'connection_mode':mode,
+                     'u1_filament':u1_filament.slots(status) if printer_profile(printer)=='snapmaker-u1' else [],
+                     'u1_filament_job':U1_FILAMENT_JOBS.get(printer['id'])}
+
+U1_FILAMENT_LOCK = threading.Lock()
+U1_FILAMENT_JOBS = {}
+
+def run_u1_filament(printer, steps):
+    """Run one U1 load/unload in the background: a full unload takes about 90 s, longer than proxies wait."""
+    CURRENT.printer = printer
+    error = None
+    try:
+        for step in steps: api('/printer/gcode/script', {'script': step}, timeout=600)
+    except ValueError as failure:
+        error = str(failure) or 'The printer stopped the filament change'
+    except Exception as failure:
+        # The connection dropped; the printer may still be working, so leave its heaters alone.
+        error = 'Lost contact with the printer during the filament change. Check the printer screen. ('+str(failure)+')'
+    if error is None or not error.startswith('Lost contact'):
+        try: api('/printer/gcode/script', {'script': u1_filament.STOP}, timeout=60)
+        except Exception: pass
+    with U1_FILAMENT_LOCK:
+        U1_FILAMENT_JOBS[printer['id']] = {**U1_FILAMENT_JOBS.get(printer['id'], {}), 'running': False, 'error': error}
+    feed_for(printer).touch()
+
+def start_u1_filament(data):
+    printer = dict(CURRENT.printer)
+    if printer_profile(printer) != 'snapmaker-u1': raise ValueError('Filament load and unload is only available on the Snapmaker U1')
+    status = api('/printer/objects/query?' + '&'.join(urllib.parse.quote(x) for x in u1_filament.OBJECTS))['status']
+    mode, index = data.get('mode'), data.get('extruder')
+    steps = u1_filament.scripts(mode, index, status)
+    with U1_FILAMENT_LOCK:
+        if (U1_FILAMENT_JOBS.get(printer['id']) or {}).get('running'): raise ValueError('A filament change is already running')
+        U1_FILAMENT_JOBS[printer['id']] = {'mode': mode, 'extruder': index, 'running': True, 'error': None}
+    threading.Thread(target=run_u1_filament, args=(printer, steps), daemon=True, name='u1-filament-'+printer['id']).start()
+    return {'started': True, 'mode': mode, 'extruder': index}
 
 
 
@@ -1211,6 +1247,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     prepare_recording()
                     result = api('/printer/print/start', {'filename': filename})
+            elif action == 'u1_filament':
+                result = start_u1_filament(data)
             elif action == 'box':
                 script = box_script(data, control_status(), box_catalog())
                 result = api('/printer/gcode/script', {'script':script})

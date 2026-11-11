@@ -9,8 +9,8 @@ except ImportError:
 
 def wanted_objects(objects):
     import re
-    base = {'print_stats','heater_bed','heaters','toolhead','virtual_sdcard','display_status','fan','gcode_move','webhooks','multi_color_controller','box_extras','led cavity_led'}
-    return {x: None for x in objects if x in base or re.fullmatch(r'extruder\d*',x) or x.startswith(('box_stepper ','aht20_f ','temperature_sensor ','temperature_fan ','heater_generic ','fan_generic ','heater_fan ','controller_fan ','output_pin '))}
+    base = {'print_stats','heater_bed','heaters','toolhead','virtual_sdcard','display_status','fan','gcode_move','webhooks','multi_color_controller','box_extras','led cavity_led','print_task_config','machine_state_manager'}
+    return {x: None for x in objects if x in base or re.fullmatch(r'extruder\d*',x) or x.startswith(('filament_feed ','box_stepper ','aht20_f ','temperature_sensor ','temperature_fan ','heater_generic ','fan_generic ','heater_fan ','controller_fan ','output_pin '))}
 
 
 def merge_status(status, delta):
@@ -42,6 +42,12 @@ class PrinterFeed:
                 else: self.status = copy.deepcopy(status)
             self.error = error
             if mode: self.mode = mode
+            self.version += 1
+            self.ready.set()
+
+    def touch(self):
+        """Wake waiting dashboards after a change made outside the printer status (for example a job result)."""
+        with self.lock:
             self.version += 1
             self.ready.set()
 

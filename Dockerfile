@@ -15,5 +15,5 @@ COPY completion_status.py ./
 
 COPY frame_cache.py ./
 
-COPY upload_jobs.py ./
+COPY upload_jobs.py u1_filament.py ./
 COPY icons ./icons
