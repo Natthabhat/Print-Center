@@ -16,3 +16,4 @@ COPY completion_status.py ./
 COPY frame_cache.py ./
 
 COPY upload_jobs.py ./
+COPY icons ./icons

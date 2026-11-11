@@ -551,6 +551,8 @@ def print_plan(filename):
     return value
 
 UPLOAD_LIMIT = 200 * 1024 * 1024
+# Site icons are public so the sign-in page can show them.
+ICONS = {'/favicon.ico': 'favicon.ico', **{'/icons/'+name: name for name in ('favicon-32.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png')}}
 UPLOADS = UploadJobs(CONFIG.parent/'uploads', UPLOAD_LIMIT)
 
 def normalize_print_archive(source, destination, filename):
@@ -818,6 +820,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():
             return self.reply({'error': 'Invalid host'}, 403)
+        icon = ICONS.get(urllib.parse.urlsplit(self.path).path)
+        if icon:
+            return self.reply((ROOT/'icons'/icon).read_bytes(), kind='image/x-icon' if icon.endswith('.ico') else 'image/png', headers={'Cache-Control': 'public, max-age=86400'})
         if not self.authenticated():
             return
         parsed = urllib.parse.urlsplit(self.path)
