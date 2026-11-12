@@ -60,16 +60,27 @@ class LineTests(unittest.TestCase):
 
     def test_send_respects_switches(self):
         self.bot.config['recipients'] = {'U1': {'name': 'N'}}
-        self.assertEqual(self.bot.send('complete', {'title': 'Q2 1 finished printing', 'body': 'a.gcode'}, wait=True), 1)
+        self.assertEqual(self.bot.send('complete', {'title': 'Q2 1 finished printing', 'body': 'a.gcode', 'printer': 'Q2 1', 'file': 'a.gcode', 'duration': 5025}, wait=True), 1)
         path, body, auth = self.fake.calls[-1]
         self.assertEqual((path, auth), ('/v2/bot/message/multicast', 'Bearer tok'))
-        self.assertEqual(json.loads(body)['messages'][0]['text'], '✅ Q2 1 finished printing\na.gcode')
+        sent = json.loads(body)['messages'][0]
+        self.assertEqual(sent['type'], 'flex')
+        self.assertTrue(sent['altText'].startswith('✅ Q2 1 finished printing'))
         self.bot.settings(True, ['error'])
         self.assertEqual(self.bot.send('complete', {'title': 't'}, wait=True), 0)
         self.bot.settings(False, ['error'])
         self.assertEqual(self.bot.send('error', {'title': 't'}, wait=True), 0)
         self.assertEqual(self.bot.send('test', {'title': 't'}, wait=True), 1)
 
+
+    def test_card_layout(self):
+        from line_notify import card, hours
+        from push import TEXT
+        self.assertEqual(hours(5025, lambda k, **v: TEXT['th'][k].format(**v)), '1 ชม. 23 นาที')
+        c = card('error', 'Q2 2 stopped', [('Printer', 'Q2 2'), ('Error', '')], {'chip': 'ERROR'}, 'https://x/', 'Open')
+        rows = c['contents']['body']['contents']
+        self.assertEqual(len(rows), 1)  # empty values are left out
+        self.assertEqual(c['contents']['footer']['contents'][0]['action']['uri'], 'https://x/')
 
 if __name__ == '__main__':
     unittest.main()

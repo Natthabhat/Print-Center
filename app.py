@@ -43,7 +43,7 @@ LIBRARY = ModelLibrary(CONFIG.parent)
 COMPLETION = CompletionStatus(CONFIG.parent/'completion-status.json')
 # Push services ask for a contact; the dashboard's own address is used so no personal details are sent.
 PUSH = Push(CONFIG.parent, 'https://'+PUBLIC_HOST if PUBLIC_HOST else 'https://print-center.local')
-LINE = LineBot(CONFIG.parent, text=PUSH.text)
+LINE = LineBot(CONFIG.parent, text=PUSH.text, link='https://'+PUBLIC_HOST+'/' if PUBLIC_HOST else None)
 PUSH.listeners.append(LINE.send)
 LINE_WEBHOOK = 'https://'+(PUBLIC_HOST or 'your-public-address')+'/api/line/webhook'
 LOCK = threading.RLock()

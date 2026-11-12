@@ -4,13 +4,38 @@ Only the channel ID and channel secret are needed: short-lived access tokens are
 when sending. People link their LINE account by sending the bot the code shown in Print Center,
 so a stranger who adds the bot as a friend never receives printer messages.
 """
-import base64, hashlib, hmac, json, os, pathlib, secrets, threading, time, urllib.error, urllib.parse, urllib.request
+import base64, datetime, hashlib, hmac, json, os, pathlib, secrets, threading, time, urllib.error, urllib.parse, urllib.request
 from push import TEXT
 
 API = 'https://api.line.me'
 EVENTS = ('complete', 'error')
 MAX_RECIPIENTS = 20
-ICONS = {'complete': '✅', 'error': '⚠️', 'test': '🔔'}
+ICONS = {'complete': '✅', 'error': '⚠️', 'test': '🔔', 'info': '🖨️', 'linked': '✅'}
+COLORS = {'complete': '#3f9a1f', 'error': '#e5302a', 'test': '#0f52ba', 'info': '#0f52ba', 'linked': '#3f9a1f'}
+THAI_TIME = datetime.timezone(datetime.timedelta(hours=7))  # the printers and their owner are in Thailand
+
+
+def hours(seconds, text):
+    minutes = max(1, int(seconds // 60))
+    return text('dur_h', h=minutes // 60, m=minutes % 60) if minutes >= 60 else text('dur_m', m=minutes)
+
+
+def card(kind, title, rows, text, link=None, open_label='Open', note=''):
+    """A LINE Flex bubble: coloured header, a note and/or label/value rows, and an optional button."""
+    body = [{'type': 'text', 'text': note[:1000], 'size': 'sm', 'color': '#1f1f1f', 'wrap': True}] if note else []
+    body += [{'type': 'box', 'layout': 'horizontal', 'spacing': 'md', 'contents': [
+        {'type': 'text', 'text': label, 'size': 'sm', 'color': '#8a8a8a', 'flex': 2},
+        {'type': 'text', 'text': str(value)[:300], 'size': 'sm', 'color': '#1f1f1f', 'flex': 5, 'wrap': True}]}
+        for label, value in rows if value]
+    bubble = {'type': 'bubble', 'size': 'kilo',
+              'header': {'type': 'box', 'layout': 'vertical', 'backgroundColor': COLORS[kind], 'paddingAll': '16px', 'contents': [
+                  {'type': 'text', 'text': text['chip'], 'size': 'xs', 'color': '#ffffffcc', 'weight': 'bold'},
+                  {'type': 'text', 'text': ICONS[kind] + ' ' + title, 'size': 'lg', 'color': '#ffffff', 'weight': 'bold', 'wrap': True, 'margin': 'sm'}]}}
+    if body: bubble['body'] = {'type': 'box', 'layout': 'vertical', 'spacing': 'md', 'paddingAll': '16px', 'contents': body}
+    if link: bubble['footer'] = {'type': 'box', 'layout': 'vertical', 'paddingAll': '12px', 'contents': [
+        {'type': 'button', 'style': 'primary', 'color': '#0f52ba', 'height': 'sm', 'action': {'type': 'uri', 'label': open_label[:20], 'uri': link}}]}
+    alt = ICONS[kind] + ' ' + title + ('\n' + note if note else '') + ''.join('\n' + str(v) for _, v in rows if v)
+    return {'type': 'flex', 'altText': alt[:400], 'contents': bubble}
 
 
 def call(path, data=None, token=None, form=False, opener=urllib.request.urlopen):
@@ -34,11 +59,12 @@ def call(path, data=None, token=None, form=False, opener=urllib.request.urlopen)
 
 
 class LineBot:
-    def __init__(self, folder, opener=urllib.request.urlopen, text=None):
+    def __init__(self, folder, opener=urllib.request.urlopen, text=None, link=None):
         self.path = pathlib.Path(folder) / 'line-bot.json'
         self.opener = opener
+        self.link = link  # https address for the card's Open button
         # text(key) gives a bot reply in the chosen notification language.
-        self.text = text or (lambda key: TEXT['en'][key])
+        self.text = text or (lambda key, **values: TEXT['en'][key].format(**values))
         self.lock = threading.Lock()
         self.token = (None, 0)
         try: self.config = json.loads(self.path.read_text())
@@ -115,9 +141,13 @@ class LineBot:
         expected = base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
         return hmac.compare_digest(expected, signature)
 
-    def _reply(self, reply_token, text):
+    def _card(self, kind, title, rows=(), note='', with_link=True):
+        return card(kind, title, list(rows), {'chip': self.text('chip_' + kind)}, self.link if with_link else None, self.text('open'), note)
+
+    def _reply(self, reply_token, kind, title, text):
         if not reply_token: return
-        try: self._call('/v2/bot/message/reply', {'replyToken': reply_token, 'messages': [{'type': 'text', 'text': text}]}, token=self.access_token())
+        message = self._card(kind, title, note=text, with_link=False)
+        try: self._call('/v2/bot/message/reply', {'replyToken': reply_token, 'messages': [message]}, token=self.access_token())
         except ValueError: pass
 
     def webhook(self, body, signature):
@@ -130,7 +160,7 @@ class LineBot:
             uid = source.get('userId')
             if source.get('type') != 'user' or not isinstance(uid, str): continue
             if event.get('type') == 'follow':
-                self._reply(event.get('replyToken'), self.text('line_follow'))
+                self._reply(event.get('replyToken'), 'info', self.text('link_title'), self.text('line_follow'))
             elif event.get('type') == 'message' and (event.get('message') or {}).get('type') == 'text':
                 text = ''.join(ch for ch in event['message'].get('text', '') if ch.isdigit())
                 with self.lock:
@@ -147,11 +177,11 @@ class LineBot:
                     except ValueError: name = ''
                     with self.lock:
                         if uid in self.config.get('recipients', {}): self.config['recipients'][uid]['name'] = name[:80]; self._save()
-                    self._reply(event.get('replyToken'), self.text('line_linked'))
+                    self._reply(event.get('replyToken'), 'linked', self.text('linked_title'), self.text('line_linked'))
                 elif linked:
-                    self._reply(event.get('replyToken'), self.text('line_already'))
+                    self._reply(event.get('replyToken'), 'linked', self.text('linked_title'), self.text('line_already'))
                 else:
-                    self._reply(event.get('replyToken'), self.text('line_code'))
+                    self._reply(event.get('replyToken'), 'info', self.text('link_title'), self.text('line_code'))
         return True
 
     def send(self, event, message, wait=False):
@@ -162,12 +192,20 @@ class LineBot:
                 return 0
             users = list((c.get('recipients') or {}).keys())
         if not users: return 0
-        text = ICONS.get(event, '') + ' ' + message['title'] + ('\n' + message['body'] if message.get('body') else '')
+        now = datetime.datetime.now(THAI_TIME).strftime('%d/%m/%Y %H:%M')
+        if event == 'test':
+            card_message = self._card('test', self.text('test_title'), [(self.text('label_at'), now)], note=message.get('body') or '')
+        else:
+            card_message = self._card(event, message['title'], [
+                (self.text('label_printer'), message.get('printer')), (self.text('label_file'), message.get('file')),
+                (self.text('label_error'), message.get('detail')),
+                (self.text('label_time'), hours(message['duration'], self.text) if message.get('duration') else None),
+                (self.text('label_at'), now)])
         def deliver():
             try:
                 token = self.access_token()
                 for start in range(0, len(users), 500):
-                    self._call('/v2/bot/message/multicast', {'to': users[start:start + 500], 'messages': [{'type': 'text', 'text': text[:4900]}]}, token=token)
+                    self._call('/v2/bot/message/multicast', {'to': users[start:start + 500], 'messages': [card_message]}, token=token)
             except ValueError as failure:
                 print('LINE notification failed:', failure, flush=True)
                 if wait: raise

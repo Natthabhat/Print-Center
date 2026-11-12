@@ -25,14 +25,20 @@ TEXT = {
            'line_follow': 'Hi! To get 3D printer notifications, open Print Center → Notifications and send me the 6-digit LINE code shown there.',
            'line_linked': '✅ Linked! You will get a message here when a print finishes or stops with an error.',
            'line_already': 'You are already linked to Print Center notifications.',
-           'line_code': 'Send the 6-digit LINE code shown in Print Center → Notifications to link this chat.'},
+           'line_code': 'Send the 6-digit LINE code shown in Print Center → Notifications to link this chat.',
+           'chip_complete': 'COMPLETED', 'chip_error': 'ERROR', 'dur_h': '{h}h {m:02d}m', 'dur_m': '{m} min', 'chip_test': 'TEST', 'chip_info': 'PRINT CENTER', 'chip_linked': 'LINKED',
+           'label_printer': 'Printer', 'label_file': 'File', 'label_time': 'Print time', 'label_error': 'Error', 'label_at': 'Time',
+           'open': 'Open Print Center', 'test_title': 'Test notification', 'link_title': 'Link LINE notifications', 'linked_title': 'LINE linked'},
     'th': {'complete': 'เครื่อง {name} ปริ้นเสร็จแล้ว', 'complete_body': 'ปริ้นเสร็จเรียบร้อย',
            'error': 'เครื่อง {name} หยุดปริ้นเพราะเกิดข้อผิดพลาด', 'error_body': 'กรุณาตรวจสอบเครื่องปริ้น',
            'test_push': 'การแจ้งเตือนบนอุปกรณ์นี้ใช้งานได้แล้ว', 'test_line': 'การแจ้งเตือนผ่าน LINE ใช้งานได้แล้ว',
            'line_follow': 'สวัสดี! หากต้องการรับการแจ้งเตือนเครื่องปริ้น 3D ให้เปิด Print Center → การแจ้งเตือน แล้วส่งรหัส LINE 6 หลักที่แสดงอยู่มาให้ฉัน',
            'line_linked': '✅ เชื่อมต่อแล้ว! คุณจะได้รับข้อความที่นี่เมื่อปริ้นเสร็จหรือหยุดเพราะเกิดข้อผิดพลาด',
            'line_already': 'บัญชีนี้เชื่อมต่อกับการแจ้งเตือนของ Print Center แล้ว',
-           'line_code': 'ส่งรหัส LINE 6 หลักที่แสดงใน Print Center → การแจ้งเตือน เพื่อเชื่อมต่อแชทนี้'},
+           'line_code': 'ส่งรหัส LINE 6 หลักที่แสดงใน Print Center → การแจ้งเตือน เพื่อเชื่อมต่อแชทนี้',
+           'chip_complete': 'สำเร็จ', 'chip_error': 'ข้อผิดพลาด', 'dur_h': '{h} ชม. {m} นาที', 'dur_m': '{m} นาที', 'chip_test': 'ทดสอบ', 'chip_info': 'PRINT CENTER', 'chip_linked': 'เชื่อมต่อแล้ว',
+           'label_printer': 'เครื่อง', 'label_file': 'ไฟล์', 'label_time': 'เวลาปริ้น', 'label_error': 'ข้อผิดพลาด', 'label_at': 'เวลา',
+           'open': 'เปิด Print Center', 'test_title': 'ทดสอบการแจ้งเตือน', 'link_title': 'เชื่อมต่อการแจ้งเตือน LINE', 'linked_title': 'เชื่อมต่อ LINE แล้ว'},
 }
 
 
@@ -213,7 +219,11 @@ class Push:
         else:
             detail = str(job.get('message') or '').strip()
             message = {'title': self.text('error', name=name), 'body': ' · '.join(x for x in (filename, detail[:200]) if x) or self.text('error_body')}
-        message.update(tag=printer['id'] + '-' + event, url='/')
+        # Extra details for richer channels (LINE cards); browsers only use title and body.
+        duration = job.get('print_duration') or job.get('total_duration')
+        message.update(tag=printer['id'] + '-' + event, url='/', printer=name, file=filename,
+                       detail=str(job.get('message') or '').strip()[:300] if event == 'error' else '',
+                       duration=duration if isinstance(duration, (int, float)) and duration > 0 else None)
         self.send(message, event)
         for listener in self.listeners:
             try: listener(event, message)

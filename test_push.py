@@ -108,7 +108,8 @@ class PushTests(unittest.TestCase):
             self.push.watch(printer, {'state': 'printing', 'filename': 'b.gcode'})
             self.assertEqual(self.push.watch(printer, {'state': 'error', 'filename': 'b.gcode', 'message': 'Heater extruder not heating'}), 'error')
             self.assertIsNone(self.push.watch(printer, {'state': 'error'}))
-        self.assertEqual(sent[0], ('complete', {'title': 'Q2 1 finished printing', 'body': 'part.gcode', 'tag': 'qidi-complete', 'url': '/'}))
+        self.assertEqual(sent[0], ('complete', {'title': 'Q2 1 finished printing', 'body': 'part.gcode', 'tag': 'qidi-complete', 'url': '/',
+                                       'printer': 'Q2 1', 'file': 'part.gcode', 'detail': '', 'duration': None}))
         self.assertEqual(sent[1][1]['body'], 'b.gcode · Heater extruder not heating')
 
     def test_send_respects_each_devices_choices(self):
