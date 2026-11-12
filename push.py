@@ -79,6 +79,7 @@ class Push:
         self.subject = subject
         self.lock = threading.Lock()
         self.states = {}
+        self.listeners = []  # other channels (LINE) called with (event, message)
         try: self.devices = json.loads(self.path.read_text())
         except (OSError, ValueError): self.devices = {}
         if not isinstance(self.devices, dict): self.devices = {}
@@ -180,6 +181,9 @@ class Push:
             message = {'title': name + ' stopped with an error', 'body': ' · '.join(x for x in (filename, detail[:200]) if x) or 'Check the printer'}
         message.update(tag=printer['id'] + '-' + event, url='/')
         self.send(message, event)
+        for listener in self.listeners:
+            try: listener(event, message)
+            except Exception as failure: print('Notification failed:', failure, flush=True)
         return event
 
 

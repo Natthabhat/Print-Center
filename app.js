@@ -324,7 +324,34 @@ async function turnNotifyOff(){const sub=await notifySubscription();if(sub){awai
 $('notifyToggle').onclick=async()=>{const b=$('notifyToggle');if(b.disabled)return;b.disabled=true;try{b.getAttribute('aria-checked')==='true'?await turnNotifyOff():await turnNotifyOn()}catch(e){showNotifyState(false);notifyMessage('Could not turn on notifications. '+e.message)}finally{b.disabled=false}};
 for(const b of document.querySelectorAll('.notifyevent'))b.onclick=async()=>{const before=b.getAttribute('aria-checked');setSwitch(b,before!=='true');b.disabled=true;try{const sub=await notifySubscription();const state=await pushCall({action:'subscribe',subscription:sub.toJSON(),events:notifyEvents()});showNotifyState(true,state.events);notifyMessage(state.events.length?'':'Both alerts are off. Turn one on, or turn notifications off for this device.')}catch(e){setSwitch(b,before==='true');b.disabled=false;notifyMessage('Could not save: '+e.message)}};
 $('notifyTest').onclick=async()=>{try{const sub=await notifySubscription();await pushCall({action:'test',endpoint:sub.endpoint});notifyMessage('Test sent. It should appear in a few seconds.')}catch(e){notifyMessage('Could not send a test: '+e.message)}};
-$('notifyButton').onclick=()=>{$('notifySettings').showModal();refreshNotify()};
+$('notifyButton').onclick=()=>{$('notifySettings').showModal();refreshNotify();lineMessage('');lineState=null;refreshLine();clearInterval(lineTimer);lineTimer=setInterval(refreshLine,4000)};
 $('closeNotify').onclick=()=>$('notifySettings').close();
 iconLabel($('notifyButton'),'bell','Notifications');
 if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
+
+let lineState=null,lineTimer=null;
+function lineMessage(m){$('lineMessage').textContent=m||'';$('lineMessage').hidden=!m}
+async function lineCall(data){const r=await fetch('/api/line',data?{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify(data),signal:AbortSignal.timeout(25000)}:{signal:AbortSignal.timeout(15000)});const v=await r.json();if(!r.ok)throw Error(v.error||'Request failed');return v}
+function showLine(s,editing){
+  lineState=s;const linked=s.configured&&!editing;
+  $('lineForm').hidden=linked;$('lineLinked').hidden=!linked;
+  $('lineChannelId').value=s.channel_id||'';$('lineSecret').placeholder=s.configured?'Saved (leave blank to keep)':'';$('lineSecret').required=!s.configured;
+  if(!linked)return;
+  const bot=s.bot||{};$('lineBotName').textContent=(bot.name||'LINE bot')+(bot.basic_id?' · '+bot.basic_id:'');
+  setSwitch($('lineEnabled'),s.enabled);for(const [id,k] of [['lineComplete','complete'],['lineError','error']]){setSwitch($(id),s.events.includes(k));$(id).disabled=!s.enabled}
+  $('lineWebhook').textContent=s.webhook_url;$('lineCode').textContent=s.code;
+  const f=$('lineFriend');f.textContent='';if(bot.basic_id){const a=document.createElement('a');a.href='https://line.me/R/ti/p/'+encodeURIComponent(bot.basic_id);a.target='_blank';a.rel='noopener';a.textContent=' ('+bot.basic_id+')';f.append(a)}
+  const list=$('lineRecipients');list.textContent='';
+  if(!s.recipients.length){const li=document.createElement('li');li.textContent='None yet. Send the code above to the bot.';list.append(li)}
+  for(const r of s.recipients){const li=document.createElement('li'),name=document.createElement('span'),b=document.createElement('button');name.textContent=r.name;b.type='button';b.className='smallbutton';b.textContent='Remove';b.onclick=async()=>{try{showLine(await lineCall({action:'remove',user:r.id}))}catch(e){lineMessage(e.message)}};li.append(name,b);list.append(li)}
+  $('lineTest').disabled=!s.recipients.length;
+}
+async function refreshLine(){try{const s=await lineCall();if(!lineState||JSON.stringify(s)!==JSON.stringify(lineState))showLine(s,!$('lineForm').hidden&&lineState&&lineState.configured)}catch(e){lineMessage(e.message)}}
+$('lineForm').onsubmit=async e=>{e.preventDefault();$('lineConnect').disabled=true;lineMessage('Checking with LINE…');try{showLine(await lineCall({action:'connect',channel_id:$('lineChannelId').value,channel_secret:$('lineSecret').value}));$('lineSecret').value='';lineMessage('LINE bot connected. Follow the steps below.')}catch(e){lineMessage(e.message)}finally{$('lineConnect').disabled=false}};
+async function lineSettings(){const events=[['lineComplete','complete'],['lineError','error']].filter(([id])=>$(id).getAttribute('aria-checked')==='true').map(x=>x[1]);try{showLine(await lineCall({action:'settings',enabled:$('lineEnabled').getAttribute('aria-checked')==='true',events}))}catch(e){lineMessage(e.message);refreshLine()}}
+for(const id of ['lineEnabled','lineComplete','lineError'])$(id).onclick=()=>{const b=$(id);setSwitch(b,b.getAttribute('aria-checked')!=='true');lineSettings()};
+$('lineTest').onclick=async()=>{$('lineTest').disabled=true;try{await lineCall({action:'test'});lineMessage('Test sent to LINE.')}catch(e){lineMessage(e.message)}finally{$('lineTest').disabled=false}};
+$('lineCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('lineWebhook').textContent);lineMessage('Webhook URL copied.')}catch(e){lineMessage('Copy failed; select the address and copy it.')}};
+$('lineEdit').onclick=()=>{showLine(lineState,true);lineMessage('')};
+$('lineDisconnect').onclick=async()=>{if(!confirm('Disconnect the LINE bot? Linked accounts will stop getting messages.'))return;try{showLine(await lineCall({action:'disconnect'}));lineMessage('LINE bot disconnected.')}catch(e){lineMessage(e.message)}};
+$('notifySettings').addEventListener('close',()=>{clearInterval(lineTimer);lineTimer=null});

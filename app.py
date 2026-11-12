@@ -6,6 +6,7 @@ from web_auth import WebAuth
 from upload_jobs import UploadJobs, UploadBusy
 import u1_filament
 from push import Push
+from line_notify import LineBot
 import gzip
 from web_assets import StaticFiles, compressible, accepts_gzip, etag_matches, home_payload, MIN_COMPRESS, YEAR, REVALIDATE
 from plate_detection import PlateDetection
@@ -42,6 +43,9 @@ LIBRARY = ModelLibrary(CONFIG.parent)
 COMPLETION = CompletionStatus(CONFIG.parent/'completion-status.json')
 # Push services ask for a contact; the dashboard's own address is used so no personal details are sent.
 PUSH = Push(CONFIG.parent, 'https://'+PUBLIC_HOST if PUBLIC_HOST else 'https://print-center.local')
+LINE = LineBot(CONFIG.parent)
+PUSH.listeners.append(LINE.send)
+LINE_WEBHOOK = 'https://'+(PUBLIC_HOST or 'your-public-address')+'/api/line/webhook'
 LOCK = threading.RLock()
 CURRENT = threading.local()
 CACHE = {}
@@ -887,6 +891,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({'error':'Could not save your session. Please try again.'},503)
         age = '; Max-Age='+str(WebAuth.REMEMBER_AGE) if remember else ''
         self.reply({'ok': True}, headers={'Set-Cookie': 'print_center_session='+token+'; Path=/'+age+'; HttpOnly; Secure; SameSite=Strict'})
+    def line_webhook(self):
+        # Called by LINE's servers, which cannot sign in; the channel-secret signature proves the sender.
+        self.close_connection = True
+        try: length = int(self.headers.get('Content-Length', '0'))
+        except ValueError: length = -1
+        if not 0 <= length <= 1024 * 1024: return self.reply({'error': 'Invalid request'}, 400)
+        self.connection.settimeout(10)
+        body = self.rfile.read(length)
+        if not LINE.webhook(body, self.headers.get('X-Line-Signature', '')): return self.reply({'error': 'Invalid signature'}, 403)
+        self.reply({'ok': True})
     def do_GET(self):
         if not self.host_ok():
             return self.reply({'error': 'Invalid host'}, 403)
@@ -902,6 +916,8 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
         try:
+            if path == '/api/line':
+                return self.reply(LINE.public(LINE_WEBHOOK))
             if path == '/api/push-key':
                 return self.reply({'key': PUSH.public_key()})
             if path == '/api/upload/status':
@@ -1058,10 +1074,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({'error': 'Invalid host'}, 403)
         if urllib.parse.urlsplit(self.path).path == '/api/login':
             return self.login()
+        if urllib.parse.urlsplit(self.path).path == '/api/line/webhook':
+            return self.line_webhook()
         if not self.authenticated():
             return
         path = urllib.parse.urlsplit(self.path).path
-        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/upload/start', '/api/upload/chunk', '/api/upload/finish', '/api/logout', '/api/printer-settings', '/api/printer-photo', '/api/plate-detection', '/api/library', '/api/library/upload', '/api/push'):
+        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/upload/start', '/api/upload/chunk', '/api/upload/finish', '/api/logout', '/api/printer-settings', '/api/printer-photo', '/api/plate-detection', '/api/library', '/api/library/upload', '/api/push', '/api/line'):
             return self.reply({'error': 'Not found'}, 404)
         if not self.host_ok() or self.headers.get('X-Control-Token') != TOKEN:
             return self.reply({'error': 'Refresh this dashboard before using controls'}, 403)
@@ -1087,6 +1105,17 @@ class Handler(BaseHTTPRequestHandler):
                 if path == '/api/upload/finish': return self.reply(UPLOADS.finish(data.get('upload'), save_upload))
                 printer = selected(data.get('printer', ''))
                 return self.reply(UPLOADS.start(printer['id'], checked_upload_name(printer, data.get('filename', '')), data.get('size')))
+            if path == '/api/line':
+                if not 0 < length <= 4096: raise ValueError('Invalid LINE request')
+                data = json.loads(self.rfile.read(length)); action = data.get('action') if isinstance(data, dict) else None
+                if action == 'connect': LINE.connect(data.get('channel_id'), data.get('channel_secret'))
+                elif action == 'settings': LINE.settings(data.get('enabled'), data.get('events'))
+                elif action == 'remove': LINE.remove(data.get('user'))
+                elif action == 'disconnect': LINE.disconnect()
+                elif action == 'test':
+                    if not LINE.send('test', {'title': 'Print Center', 'body': 'LINE notifications are working'}, wait=True): raise ValueError('Link a LINE account first')
+                else: raise ValueError('Unknown LINE action')
+                return self.reply(LINE.public(LINE_WEBHOOK))
             if path == '/api/push':
                 if not 0 < length <= 8192: raise ValueError('Invalid notification request')
                 data = json.loads(self.rfile.read(length)); action = data.get('action') if isinstance(data, dict) else None

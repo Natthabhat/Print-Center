@@ -15,3 +15,5 @@ uploads/
 push-vapid.pem
 push-vapid.tmp
 push-devices.json
+line-bot.json
+line-bot.tmp
