@@ -324,7 +324,7 @@ async function turnNotifyOff(){const sub=await notifySubscription();if(sub){awai
 $('notifyToggle').onclick=async()=>{const b=$('notifyToggle');if(b.disabled)return;b.disabled=true;try{b.getAttribute('aria-checked')==='true'?await turnNotifyOff():await turnNotifyOn()}catch(e){showNotifyState(false);notifyMessage('Could not turn on notifications. '+e.message)}finally{b.disabled=false}};
 for(const b of document.querySelectorAll('.notifyevent'))b.onclick=async()=>{const before=b.getAttribute('aria-checked');setSwitch(b,before!=='true');b.disabled=true;try{const sub=await notifySubscription();const state=await pushCall({action:'subscribe',subscription:sub.toJSON(),events:notifyEvents()});showNotifyState(true,state.events);notifyMessage(state.events.length?'':'Both alerts are off. Turn one on, or turn notifications off for this device.')}catch(e){setSwitch(b,before==='true');b.disabled=false;notifyMessage('Could not save: '+e.message)}};
 $('notifyTest').onclick=async()=>{try{const sub=await notifySubscription();await pushCall({action:'test',endpoint:sub.endpoint});notifyMessage('Test sent. It should appear in a few seconds.')}catch(e){notifyMessage('Could not send a test: '+e.message)}};
-$('notifyButton').onclick=()=>{$('notifySettings').showModal();refreshNotify();lineMessage('');lineState=null;refreshLine();clearInterval(lineTimer);lineTimer=setInterval(refreshLine,4000)};
+$('notifyButton').onclick=()=>{$('notifySettings').showModal();loadNotifyLanguage();refreshNotify();lineMessage('');lineState=null;refreshLine();clearInterval(lineTimer);lineTimer=setInterval(refreshLine,4000)};
 $('closeNotify').onclick=()=>$('notifySettings').close();
 iconLabel($('notifyButton'),'bell','Notifications');
 if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});
@@ -355,3 +355,6 @@ $('lineCopy').onclick=async()=>{try{await navigator.clipboard.writeText($('lineW
 $('lineEdit').onclick=()=>{showLine(lineState,true);lineMessage('')};
 $('lineDisconnect').onclick=async()=>{if(!confirm('Disconnect the LINE bot? Linked accounts will stop getting messages.'))return;try{showLine(await lineCall({action:'disconnect'}));lineMessage('LINE bot disconnected.')}catch(e){lineMessage(e.message)}};
 $('notifySettings').addEventListener('close',()=>{clearInterval(lineTimer);lineTimer=null});
+
+async function loadNotifyLanguage(){try{const v=await (await fetch('/api/push-key',{signal:AbortSignal.timeout(10000)})).json();if(v.language)$('notifyLanguage').value=v.language}catch(e){}}
+$('notifyLanguage').onchange=async()=>{const s=$('notifyLanguage');s.disabled=true;try{await pushCall({action:'language',language:s.value});notifyMessage(s.value==='th'?'จะส่งการแจ้งเตือนเป็นภาษาไทย เช่น "เครื่อง Q2 1 ปริ้นเสร็จแล้ว"':'Notifications will be sent in English, e.g. "Q2 1 finished printing".')}catch(e){notifyMessage('Could not save the language: '+e.message);loadNotifyLanguage()}finally{s.disabled=false}};

@@ -119,5 +119,16 @@ class PushTests(unittest.TestCase):
         self.assertEqual(deliver.call_args[0][0]['endpoint'], 'https://web.push.apple.com/b')
 
 
+    def test_thai_messages_and_language_is_saved(self):
+        self.push.set_language('th')
+        sent = []
+        printer = {'id': 'qidi', 'name': 'Q2 1'}
+        with patch.object(self.push, 'send', side_effect=lambda m, e=None, **k: sent.append(m)):
+            self.push.watch(printer, {'state': 'printing', 'filename': 'a.gcode'})
+            self.push.watch(printer, {'state': 'complete', 'filename': 'a.gcode'})
+        self.assertEqual(sent[0]['title'], 'เครื่อง Q2 1 ปริ้นเสร็จแล้ว')
+        self.assertEqual(Push(self.folder, 'x').language, 'th')
+        with self.assertRaises(ValueError): self.push.set_language('jp')
+
 if __name__ == '__main__':
     unittest.main()

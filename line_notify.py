@@ -5,6 +5,7 @@ when sending. People link their LINE account by sending the bot the code shown i
 so a stranger who adds the bot as a friend never receives printer messages.
 """
 import base64, hashlib, hmac, json, os, pathlib, secrets, threading, time, urllib.error, urllib.parse, urllib.request
+from push import TEXT
 
 API = 'https://api.line.me'
 EVENTS = ('complete', 'error')
@@ -33,9 +34,11 @@ def call(path, data=None, token=None, form=False, opener=urllib.request.urlopen)
 
 
 class LineBot:
-    def __init__(self, folder, opener=urllib.request.urlopen):
+    def __init__(self, folder, opener=urllib.request.urlopen, text=None):
         self.path = pathlib.Path(folder) / 'line-bot.json'
         self.opener = opener
+        # text(key) gives a bot reply in the chosen notification language.
+        self.text = text or (lambda key: TEXT['en'][key])
         self.lock = threading.Lock()
         self.token = (None, 0)
         try: self.config = json.loads(self.path.read_text())
@@ -127,7 +130,7 @@ class LineBot:
             uid = source.get('userId')
             if source.get('type') != 'user' or not isinstance(uid, str): continue
             if event.get('type') == 'follow':
-                self._reply(event.get('replyToken'), 'Hi! To get 3D printer notifications, open Print Center → Notifications and send me the 6-digit LINE code shown there.')
+                self._reply(event.get('replyToken'), self.text('line_follow'))
             elif event.get('type') == 'message' and (event.get('message') or {}).get('type') == 'text':
                 text = ''.join(ch for ch in event['message'].get('text', '') if ch.isdigit())
                 with self.lock:
@@ -144,11 +147,11 @@ class LineBot:
                     except ValueError: name = ''
                     with self.lock:
                         if uid in self.config.get('recipients', {}): self.config['recipients'][uid]['name'] = name[:80]; self._save()
-                    self._reply(event.get('replyToken'), '✅ Linked! You will get a message here when a print finishes or stops with an error.')
+                    self._reply(event.get('replyToken'), self.text('line_linked'))
                 elif linked:
-                    self._reply(event.get('replyToken'), 'You are already linked to Print Center notifications.')
+                    self._reply(event.get('replyToken'), self.text('line_already'))
                 else:
-                    self._reply(event.get('replyToken'), 'Send the 6-digit LINE code shown in Print Center → Notifications to link this chat.')
+                    self._reply(event.get('replyToken'), self.text('line_code'))
         return True
 
     def send(self, event, message, wait=False):

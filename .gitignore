@@ -17,3 +17,4 @@ push-vapid.tmp
 push-devices.json
 line-bot.json
 line-bot.tmp
+notify-settings.json

@@ -17,6 +17,23 @@ PUSH_HOSTS = ('fcm.googleapis.com', 'android.googleapis.com', 'updates.push.serv
 # Chrome also hands out endpoints on Google hosts such as jmt17.google.com.
 PUSH_SUFFIXES = ('.google.com', '.googleapis.com', '.push.apple.com', '.notify.windows.com', '.push.services.mozilla.com')
 ACTIVE = ('printing', 'paused')
+LANGUAGES = ('en', 'th')
+TEXT = {
+    'en': {'complete': '{name} finished printing', 'complete_body': 'Print complete',
+           'error': '{name} stopped with an error', 'error_body': 'Check the printer',
+           'test_push': 'Notifications are working on this device', 'test_line': 'LINE notifications are working',
+           'line_follow': 'Hi! To get 3D printer notifications, open Print Center → Notifications and send me the 6-digit LINE code shown there.',
+           'line_linked': '✅ Linked! You will get a message here when a print finishes or stops with an error.',
+           'line_already': 'You are already linked to Print Center notifications.',
+           'line_code': 'Send the 6-digit LINE code shown in Print Center → Notifications to link this chat.'},
+    'th': {'complete': 'เครื่อง {name} ปริ้นเสร็จแล้ว', 'complete_body': 'ปริ้นเสร็จเรียบร้อย',
+           'error': 'เครื่อง {name} หยุดปริ้นเพราะเกิดข้อผิดพลาด', 'error_body': 'กรุณาตรวจสอบเครื่องปริ้น',
+           'test_push': 'การแจ้งเตือนบนอุปกรณ์นี้ใช้งานได้แล้ว', 'test_line': 'การแจ้งเตือนผ่าน LINE ใช้งานได้แล้ว',
+           'line_follow': 'สวัสดี! หากต้องการรับการแจ้งเตือนเครื่องปริ้น 3D ให้เปิด Print Center → การแจ้งเตือน แล้วส่งรหัส LINE 6 หลักที่แสดงอยู่มาให้ฉัน',
+           'line_linked': '✅ เชื่อมต่อแล้ว! คุณจะได้รับข้อความที่นี่เมื่อปริ้นเสร็จหรือหยุดเพราะเกิดข้อผิดพลาด',
+           'line_already': 'บัญชีนี้เชื่อมต่อกับการแจ้งเตือนของ Print Center แล้ว',
+           'line_code': 'ส่งรหัส LINE 6 หลักที่แสดงใน Print Center → การแจ้งเตือน เพื่อเชื่อมต่อแชทนี้'},
+}
 
 
 def b64e(raw):
@@ -84,6 +101,10 @@ class Push:
         except (OSError, ValueError): self.devices = {}
         if not isinstance(self.devices, dict): self.devices = {}
         self._key = None
+        self.settings_path = self.folder / 'notify-settings.json'
+        try: self.language = json.loads(self.settings_path.read_text()).get('language')
+        except (OSError, ValueError, AttributeError): self.language = None
+        if self.language not in LANGUAGES: self.language = 'en'
 
     @property
     def key(self):
@@ -103,6 +124,19 @@ class Push:
         os.chmod(temp, 0o600)
         temp.replace(path)
         return key
+
+    def text(self, key, **values):
+        return TEXT[self.language][key].format(**values)
+
+    def set_language(self, language):
+        if language not in LANGUAGES: raise ValueError('Choose English or Thai')
+        with self.lock:
+            self.language = language
+            self.folder.mkdir(parents=True, exist_ok=True)
+            temp = self.settings_path.with_suffix('.tmp')
+            temp.write_text(json.dumps({'language': language}))
+            temp.replace(self.settings_path)
+        return language
 
     def public_key(self):
         return b64e(self.key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint))
@@ -175,10 +209,10 @@ class Push:
         name = printer.get('name') or printer['id']
         filename = posix_name(job.get('filename'))
         if event == 'complete':
-            message = {'title': name + ' finished printing', 'body': filename or 'Print complete'}
+            message = {'title': self.text('complete', name=name), 'body': filename or self.text('complete_body')}
         else:
             detail = str(job.get('message') or '').strip()
-            message = {'title': name + ' stopped with an error', 'body': ' · '.join(x for x in (filename, detail[:200]) if x) or 'Check the printer'}
+            message = {'title': self.text('error', name=name), 'body': ' · '.join(x for x in (filename, detail[:200]) if x) or self.text('error_body')}
         message.update(tag=printer['id'] + '-' + event, url='/')
         self.send(message, event)
         for listener in self.listeners:

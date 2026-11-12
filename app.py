@@ -43,7 +43,7 @@ LIBRARY = ModelLibrary(CONFIG.parent)
 COMPLETION = CompletionStatus(CONFIG.parent/'completion-status.json')
 # Push services ask for a contact; the dashboard's own address is used so no personal details are sent.
 PUSH = Push(CONFIG.parent, 'https://'+PUBLIC_HOST if PUBLIC_HOST else 'https://print-center.local')
-LINE = LineBot(CONFIG.parent)
+LINE = LineBot(CONFIG.parent, text=PUSH.text)
 PUSH.listeners.append(LINE.send)
 LINE_WEBHOOK = 'https://'+(PUBLIC_HOST or 'your-public-address')+'/api/line/webhook'
 LOCK = threading.RLock()
@@ -919,7 +919,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/line':
                 return self.reply(LINE.public(LINE_WEBHOOK))
             if path == '/api/push-key':
-                return self.reply({'key': PUSH.public_key()})
+                return self.reply({'key': PUSH.public_key(), 'language': PUSH.language})
             if path == '/api/upload/status':
                 try: return self.reply(UPLOADS.status(query.get('upload', [''])[0]))
                 except ValueError as error: return self.reply({'error': str(error)}, 404)
@@ -1113,7 +1113,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif action == 'remove': LINE.remove(data.get('user'))
                 elif action == 'disconnect': LINE.disconnect()
                 elif action == 'test':
-                    if not LINE.send('test', {'title': 'Print Center', 'body': 'LINE notifications are working'}, wait=True): raise ValueError('Link a LINE account first')
+                    if not LINE.send('test', {'title': 'Print Center', 'body': PUSH.text('test_line')}, wait=True): raise ValueError('Link a LINE account first')
                 else: raise ValueError('Unknown LINE action')
                 return self.reply(LINE.public(LINE_WEBHOOK))
             if path == '/api/push':
@@ -1122,9 +1122,10 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'subscribe': return self.reply(PUSH.subscribe(data.get('subscription'), data.get('events')))
                 if action == 'unsubscribe': return self.reply(PUSH.unsubscribe(data.get('endpoint')))
                 if action == 'status': return self.reply(PUSH.status(data.get('endpoint')))
+                if action == 'language': return self.reply({'language': PUSH.set_language(data.get('language'))})
                 if action == 'test':
                     if not PUSH.status(data.get('endpoint'))['subscribed']: raise ValueError('Turn on notifications first')
-                    PUSH.send({'title': 'Print Center', 'body': 'Notifications are working on this device', 'tag': 'test', 'url': '/'}, endpoint=data.get('endpoint'))
+                    PUSH.send({'title': 'Print Center', 'body': PUSH.text('test_push'), 'tag': 'test', 'url': '/'}, endpoint=data.get('endpoint'))
                     return self.reply({'sent': True})
                 raise ValueError('Unknown notification action')
             if path == '/api/library/upload':
