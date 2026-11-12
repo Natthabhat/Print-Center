@@ -9,7 +9,7 @@ const number=(n,d=1)=>Number.isFinite(n)?n.toFixed(d):'—';
 const time=s=>Number.isFinite(s)?`${Math.floor(s/3600)}h ${String(Math.floor(s/60)%60).padStart(2,'0')}m`:'—';
 function text(id,value){$(id).textContent=value}
 function scoped(path,id=selectedPrinter){return path+(path.includes('?')?'&':'?')+'printer='+encodeURIComponent(id)}
-const iconPaths={bulb:'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3Z',moon:'M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z',sun:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-6v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',info:'M12 1a11 11 0 1 0 0 22 11 11 0 0 0 0-22Zm0 4a1.8 1.8 0 1 0 0 3.6A1.8 1.8 0 0 0 12 5Zm-1.2 4.8h2.4a.4.4 0 0 1 .4.4v8.6a.4.4 0 0 1-.4.4h-2.4a.4.4 0 0 1-.4-.4v-8.6a.4.4 0 0 1 .4-.4Z',home:'M3 11 12 3l9 8M5 10v11h5v-7h4v7h5V10',pause:'M8 5v14M16 5v14',play:'M8 5l11 7-11 7V5Z',cancel:'M6 6l12 12M18 6 6 18',box:'m12 3 9 5v8l-9 5-9-5V8l9-5Zm0 9v9M3 8l9 4 9-4M7.5 5.5l9 5',expand:'M9 3H3v6M15 3h6v6M3 15v6h6M21 15v6h-6',camera:'M4 7h4l2-3h4l2 3h4v13H4V7Zm12 6a4 4 0 1 0-8 0 4 4 0 0 0 8 0Z',refresh:'M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 3M4 16l2 3a8 8 0 0 0 13-3',settings:'M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6',alert:'m12 3 10 18H2L12 3Zm0 6v5m0 3v1',temperature:'M9 14V6a3 3 0 0 1 6 0v8a5 5 0 1 1-6 0Zm3-5v8',check:'m5 12 4 4L19 6',files:'M6 3h8l4 4v14H6V3Zm8 0v5h4M9 12h6M9 16h6'};
+const iconPaths={bell:'M6 9a6 6 0 0 1 12 0c0 6 3 7 3 7H3s3-1 3-7M10 20a2 2 0 0 0 4 0',bulb:'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2V16h5v-.1c0-.8.4-1.5 1-2A6 6 0 0 0 12 3Z',moon:'M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z',sun:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-6v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4',info:'M12 1a11 11 0 1 0 0 22 11 11 0 0 0 0-22Zm0 4a1.8 1.8 0 1 0 0 3.6A1.8 1.8 0 0 0 12 5Zm-1.2 4.8h2.4a.4.4 0 0 1 .4.4v8.6a.4.4 0 0 1-.4.4h-2.4a.4.4 0 0 1-.4-.4v-8.6a.4.4 0 0 1 .4-.4Z',home:'M3 11 12 3l9 8M5 10v11h5v-7h4v7h5V10',pause:'M8 5v14M16 5v14',play:'M8 5l11 7-11 7V5Z',cancel:'M6 6l12 12M18 6 6 18',box:'m12 3 9 5v8l-9 5-9-5V8l9-5Zm0 9v9M3 8l9 4 9-4M7.5 5.5l9 5',expand:'M9 3H3v6M15 3h6v6M3 15v6h6M21 15v6h-6',camera:'M4 7h4l2-3h4l2 3h4v13H4V7Zm12 6a4 4 0 1 0-8 0 4 4 0 0 0 8 0Z',refresh:'M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 3M4 16l2 3a8 8 0 0 0 13-3',settings:'M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6',alert:'m12 3 10 18H2L12 3Zm0 6v5m0 3v1',temperature:'M9 14V6a3 3 0 0 1 6 0v8a5 5 0 1 1-6 0Zm3-5v8',check:'m5 12 4 4L19 6',files:'M6 3h8l4 4v14H6V3Zm8 0v5h4M9 12h6M9 16h6'};
 function iconLabel(element,name,label){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','1.7');svg.setAttribute('stroke-linecap','round');svg.setAttribute('stroke-linejoin','round');svg.setAttribute('aria-hidden','true');svg.setAttribute('class','icon');const p=document.createElementNS(svg.namespaceURI,'path');p.setAttribute('d',iconPaths[name]||iconPaths.box);if(name==='info'){svg.setAttribute('fill','currentColor');svg.setAttribute('stroke','none');p.setAttribute('fill-rule','evenodd')}svg.append(p);element.replaceChildren(svg,document.createTextNode(label))}
 function cssColor(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim()}
 function savedTheme(){try{const t=localStorage.getItem('theme');return t==='dark'||t==='light'?t:null}catch(e){return null}}
@@ -269,3 +269,49 @@ function refreshSlicerTiles(root,mapping,enabled=true){for(const tile of root.qu
 
 function syncMoveDistances(){const group=$('moveDistanceButtons');if(!group.children.length)for(const option of $('moveDistance').options){const b=document.createElement('button');b.type='button';b.textContent=option.value;b.dataset.distance=option.value;b.setAttribute('aria-label',option.value+' millimeters');b.onclick=()=>{$('moveDistance').value=b.dataset.distance;buttons()};group.append(b)}for(const b of group.children){b.setAttribute('aria-pressed',String(b.dataset.distance===$('moveDistance').value));b.disabled=isBambu()&&Number(b.dataset.distance)>10;b.title=b.disabled?'Bambu X/Y movement is limited to 10 mm per step':b.dataset.distance+' mm'}}
 syncMoveDistances();
+
+const notifyKinds=['complete','error'];
+function notifyMessage(message){$('notifyMessage').textContent=message||'';$('notifyMessage').hidden=!message}
+function setSwitch(button,on){button.setAttribute('aria-checked',String(Boolean(on)))}
+function notifyUnsupported(){
+  if(!window.isSecureContext)return 'Notifications need the secure address. Open Print Center at its https:// address to turn them on.';
+  const ios=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+  if(ios&&!navigator.standalone)return 'On iPhone and iPad: tap Share, then Add to Home Screen. Open Print Center from the Home Screen icon and turn notifications on there.';
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)||!('Notification' in window))return 'This browser cannot show notifications. Try Chrome on Android or Safari from the Home Screen on iPhone.';
+  return '';
+}
+async function notifySubscription(){const reg=await navigator.serviceWorker.ready;return reg.pushManager.getSubscription()}
+async function pushCall(data){const r=await fetch('/api/push',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:JSON.stringify(data),signal:AbortSignal.timeout(15000)});const value=await r.json();if(!r.ok)throw Error(value.error||'Request failed');return value}
+function notifySwitch(kind){return $('notify'+kind[0].toUpperCase()+kind.slice(1))}
+function notifyEvents(){return notifyKinds.filter(k=>notifySwitch(k).getAttribute('aria-checked')==='true')}
+function showNotifyState(on,events){setSwitch($('notifyToggle'),on);for(const k of notifyKinds){const b=notifySwitch(k);b.disabled=!on;if(events)setSwitch(b,events.includes(k))}$('notifyTest').disabled=!on}
+async function refreshNotify(){
+  const problem=notifyUnsupported();
+  if(problem){showNotifyState(false);$('notifyToggle').disabled=true;return notifyMessage(problem)}
+  $('notifyToggle').disabled=false;
+  if(Notification.permission==='denied'){showNotifyState(false);return notifyMessage('Notifications are blocked for this site. Allow them in your browser or phone settings, then try again.')}
+  notifyMessage('');
+  try{const sub=await notifySubscription();if(!sub)return showNotifyState(false);const state=await pushCall({action:'status',endpoint:sub.endpoint});showNotifyState(state.subscribed,state.subscribed?state.events:undefined)}
+  catch(e){notifyMessage(e.message)}
+}
+function keyBytes(text){const raw=atob(text.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-text.length%4)%4));return Uint8Array.from(raw,c=>c.charCodeAt(0))}
+async function turnNotifyOn(){
+  // Ask first, straight from the tap: iPhone only shows the permission prompt during a user gesture.
+  const permission=await Notification.requestPermission();
+  if(permission!=='granted'){showNotifyState(false);return notifyMessage('Notifications were not allowed. Allow them in your browser or phone settings, then try again.')}
+  const {key}=await (await fetch('/api/push-key')).json();
+  const reg=await navigator.serviceWorker.ready;
+  let sub=await reg.pushManager.getSubscription();
+  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:keyBytes(key)});
+  const events=notifyEvents().length?notifyEvents():notifyKinds;
+  const state=await pushCall({action:'subscribe',subscription:sub.toJSON(),events});
+  showNotifyState(state.subscribed,state.events);notifyMessage('Notifications are on for this device.');
+}
+async function turnNotifyOff(){const sub=await notifySubscription();if(sub){await pushCall({action:'unsubscribe',endpoint:sub.endpoint});await sub.unsubscribe()}showNotifyState(false);notifyMessage('Notifications are off for this device.')}
+$('notifyToggle').onclick=async()=>{const b=$('notifyToggle');if(b.disabled)return;b.disabled=true;try{b.getAttribute('aria-checked')==='true'?await turnNotifyOff():await turnNotifyOn()}catch(e){notifyMessage('Could not change notifications: '+e.message)}finally{b.disabled=false}};
+for(const b of document.querySelectorAll('.notifyevent'))b.onclick=async()=>{const before=b.getAttribute('aria-checked');setSwitch(b,before!=='true');b.disabled=true;try{const sub=await notifySubscription();const state=await pushCall({action:'subscribe',subscription:sub.toJSON(),events:notifyEvents()});showNotifyState(true,state.events);notifyMessage(state.events.length?'':'Both alerts are off. Turn one on, or turn notifications off for this device.')}catch(e){setSwitch(b,before==='true');b.disabled=false;notifyMessage('Could not save: '+e.message)}};
+$('notifyTest').onclick=async()=>{try{const sub=await notifySubscription();await pushCall({action:'test',endpoint:sub.endpoint});notifyMessage('Test sent. It should appear in a few seconds.')}catch(e){notifyMessage('Could not send a test: '+e.message)}};
+$('notifyButton').onclick=()=>{$('notifySettings').showModal();refreshNotify()};
+$('closeNotify').onclick=()=>$('notifySettings').close();
+iconLabel($('notifyButton'),'bell','Notifications');
+if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(()=>{});

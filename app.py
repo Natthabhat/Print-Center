@@ -5,6 +5,7 @@ import hmac
 from web_auth import WebAuth
 from upload_jobs import UploadJobs, UploadBusy
 import u1_filament
+from push import Push
 import gzip
 from web_assets import StaticFiles, compressible, accepts_gzip, etag_matches, home_payload, MIN_COMPRESS, YEAR, REVALIDATE
 from plate_detection import PlateDetection
@@ -39,6 +40,8 @@ TIMELAPSES = Timelapses(CONFIG.parent)
 PLATES = PlateDetection(CONFIG.parent)
 LIBRARY = ModelLibrary(CONFIG.parent)
 COMPLETION = CompletionStatus(CONFIG.parent/'completion-status.json')
+# Push services ask for a contact; the dashboard's own address is used so no personal details are sent.
+PUSH = Push(CONFIG.parent, 'https://'+PUBLIC_HOST if PUBLIC_HOST else 'https://print-center.local')
 LOCK = threading.RLock()
 CURRENT = threading.local()
 CACHE = {}
@@ -595,6 +598,8 @@ UPLOAD_LIMIT = 200 * 1024 * 1024
 # Site icons are public so the sign-in page can show them.
 ICONS = {'/favicon.ico': 'favicon.ico', **{'/icons/'+name: name for name in ('favicon-32.png', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'logo-68.webp', 'logo-112.webp')}}
 STATIC = StaticFiles()
+# Served without sign-in: browsers fetch these without cookies, and they contain no printer data.
+PWA_FILES = {'/sw.js': ('sw.js', 'text/javascript; charset=utf-8'), '/manifest.webmanifest': ('manifest.webmanifest', 'application/manifest+json')}
 IMAGE_KINDS = {'.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.ico': 'image/x-icon'}
 PRINTER_MODELS = ('qidi-q2.webp', 'snapmaker-u1-small.webp', 'bambu-x2d-default.webp')
 UPLOADS = UploadJobs(CONFIG.parent/'uploads', UPLOAD_LIMIT)
@@ -888,12 +893,17 @@ class Handler(BaseHTTPRequestHandler):
         icon = ICONS.get(urllib.parse.urlsplit(self.path).path)
         if icon:
             return self.send_static(ROOT/'icons'/icon, IMAGE_KINDS[pathlib.PurePath(icon).suffix], 'public, max-age=31536000, immutable' if 'v=' in urllib.parse.urlsplit(self.path).query else 'public, max-age=3600')
+        if urllib.parse.urlsplit(self.path).path in PWA_FILES:
+            name, kind = PWA_FILES[urllib.parse.urlsplit(self.path).path]
+            return self.send_static(ROOT/name, kind, 'no-cache')
         if not self.authenticated():
             return
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
         try:
+            if path == '/api/push-key':
+                return self.reply({'key': PUSH.public_key()})
             if path == '/api/upload/status':
                 try: return self.reply(UPLOADS.status(query.get('upload', [''])[0]))
                 except ValueError as error: return self.reply({'error': str(error)}, 404)
@@ -1051,7 +1061,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authenticated():
             return
         path = urllib.parse.urlsplit(self.path).path
-        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/upload/start', '/api/upload/chunk', '/api/upload/finish', '/api/logout', '/api/printer-settings', '/api/printer-photo', '/api/plate-detection', '/api/library', '/api/library/upload'):
+        if path not in ('/api/control', '/api/printers', '/api/upload', '/api/upload/start', '/api/upload/chunk', '/api/upload/finish', '/api/logout', '/api/printer-settings', '/api/printer-photo', '/api/plate-detection', '/api/library', '/api/library/upload', '/api/push'):
             return self.reply({'error': 'Not found'}, 404)
         if not self.host_ok() or self.headers.get('X-Control-Token') != TOKEN:
             return self.reply({'error': 'Refresh this dashboard before using controls'}, 403)
@@ -1077,6 +1087,17 @@ class Handler(BaseHTTPRequestHandler):
                 if path == '/api/upload/finish': return self.reply(UPLOADS.finish(data.get('upload'), save_upload))
                 printer = selected(data.get('printer', ''))
                 return self.reply(UPLOADS.start(printer['id'], checked_upload_name(printer, data.get('filename', '')), data.get('size')))
+            if path == '/api/push':
+                if not 0 < length <= 8192: raise ValueError('Invalid notification request')
+                data = json.loads(self.rfile.read(length)); action = data.get('action') if isinstance(data, dict) else None
+                if action == 'subscribe': return self.reply(PUSH.subscribe(data.get('subscription'), data.get('events')))
+                if action == 'unsubscribe': return self.reply(PUSH.unsubscribe(data.get('endpoint')))
+                if action == 'status': return self.reply(PUSH.status(data.get('endpoint')))
+                if action == 'test':
+                    if not PUSH.status(data.get('endpoint'))['subscribed']: raise ValueError('Turn on notifications first')
+                    PUSH.send({'title': 'Print Center', 'body': 'Notifications are working on this device', 'tag': 'test', 'url': '/'}, endpoint=data.get('endpoint'))
+                    return self.reply({'sent': True})
+                raise ValueError('Unknown notification action')
             if path == '/api/library/upload':
                 self.close_connection=True;self.connection.settimeout(120)
                 query=urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -1322,7 +1343,9 @@ def background_printers():
                 try:
                     feed=feed_for(printer)
                     _,status,_,error,_=feed.snapshot()
-                    if not error:COMPLETION.display(printer['id'],status.get('print_stats',{}))
+                    if not error:
+                        COMPLETION.display(printer['id'],status.get('print_stats',{}))
+                        PUSH.watch(printer,status.get('print_stats',{}))
                     cached_camera(printer)
                 except Exception:continue
             with LOCK:

@@ -15,5 +15,5 @@ COPY completion_status.py ./
 
 COPY frame_cache.py ./
 
-COPY upload_jobs.py u1_filament.py web_assets.py ./
+COPY upload_jobs.py u1_filament.py web_assets.py push.py sw.js manifest.webmanifest ./
 COPY icons ./icons

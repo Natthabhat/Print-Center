@@ -12,3 +12,6 @@ data/
 *.tar
 web-sessions.json
 uploads/
+push-vapid.pem
+push-vapid.tmp
+push-devices.json
