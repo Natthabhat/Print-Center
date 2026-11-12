@@ -295,6 +295,19 @@ async function refreshNotify(){
   catch(e){notifyMessage(e.message)}
 }
 function keyBytes(text){const raw=atob(text.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-text.length%4)%4));return Uint8Array.from(raw,c=>c.charCodeAt(0))}
+function pushServiceHelp(){
+  if(navigator.brave)return 'Brave turns off website notifications by default. Open brave://settings/privacy, turn on "Use Google services for push messaging", restart Brave, then try again.';
+  return 'This browser could not reach its notification service. Some browsers turn it off (Chromium from Linux app stores, Opera, Vivaldi, privacy browsers), and some VPNs or firewalls block it. Chrome, Edge and Firefox work.';
+}
+async function pushSubscribe(reg,key){
+  const options={userVisibleOnly:true,applicationServerKey:keyBytes(key)};
+  try{return await reg.pushManager.subscribe(options)}
+  catch(e){
+    // A half-finished earlier registration can make the browser refuse; clear it and try once more.
+    try{const old=await reg.pushManager.getSubscription();if(old)await old.unsubscribe();return await reg.pushManager.subscribe(options)}
+    catch(again){if(again.name==='AbortError'||/push service/i.test(again.message))throw Error(pushServiceHelp());throw again}
+  }
+}
 async function turnNotifyOn(){
   // Ask first, straight from the tap: iPhone only shows the permission prompt during a user gesture.
   const permission=await Notification.requestPermission();
@@ -302,13 +315,13 @@ async function turnNotifyOn(){
   const {key}=await (await fetch('/api/push-key')).json();
   const reg=await navigator.serviceWorker.ready;
   let sub=await reg.pushManager.getSubscription();
-  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:keyBytes(key)});
+  if(!sub)sub=await pushSubscribe(reg,key);
   const events=notifyEvents().length?notifyEvents():notifyKinds;
   const state=await pushCall({action:'subscribe',subscription:sub.toJSON(),events});
   showNotifyState(state.subscribed,state.events);notifyMessage('Notifications are on for this device.');
 }
 async function turnNotifyOff(){const sub=await notifySubscription();if(sub){await pushCall({action:'unsubscribe',endpoint:sub.endpoint});await sub.unsubscribe()}showNotifyState(false);notifyMessage('Notifications are off for this device.')}
-$('notifyToggle').onclick=async()=>{const b=$('notifyToggle');if(b.disabled)return;b.disabled=true;try{b.getAttribute('aria-checked')==='true'?await turnNotifyOff():await turnNotifyOn()}catch(e){notifyMessage('Could not change notifications: '+e.message)}finally{b.disabled=false}};
+$('notifyToggle').onclick=async()=>{const b=$('notifyToggle');if(b.disabled)return;b.disabled=true;try{b.getAttribute('aria-checked')==='true'?await turnNotifyOff():await turnNotifyOn()}catch(e){showNotifyState(false);notifyMessage('Could not turn on notifications. '+e.message)}finally{b.disabled=false}};
 for(const b of document.querySelectorAll('.notifyevent'))b.onclick=async()=>{const before=b.getAttribute('aria-checked');setSwitch(b,before!=='true');b.disabled=true;try{const sub=await notifySubscription();const state=await pushCall({action:'subscribe',subscription:sub.toJSON(),events:notifyEvents()});showNotifyState(true,state.events);notifyMessage(state.events.length?'':'Both alerts are off. Turn one on, or turn notifications off for this device.')}catch(e){setSwitch(b,before==='true');b.disabled=false;notifyMessage('Could not save: '+e.message)}};
 $('notifyTest').onclick=async()=>{try{const sub=await notifySubscription();await pushCall({action:'test',endpoint:sub.endpoint});notifyMessage('Test sent. It should appear in a few seconds.')}catch(e){notifyMessage('Could not send a test: '+e.message)}};
 $('notifyButton').onclick=()=>{$('notifySettings').showModal();refreshNotify()};
